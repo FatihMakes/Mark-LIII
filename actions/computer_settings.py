@@ -906,3 +906,57 @@ def computer_settings(
                   lambda: (dark_mode(), "Theme switched back.")[1])
 
     return f"Done: {action}."
+
+
+# ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
+TOOL = {
+    "name": "computer_settings",
+    "description": "Controls the computer: volume, brightness, window management, keyboard shortcuts, typing text on screen, closing apps, fullscreen, dark mode, WiFi, restart, shutdown, scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page. Use for ANY single computer control command. restart, shutdown and toggle_wifi put a confirmation on the user's screen and do NOT happen until they press it — never claim they are done. Volume, brightness and dark mode can be reversed with the `undo` tool.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            # The exact vocabulary, spelled out.
+            #
+            # This used to say only "The action to perform", so the model
+            # usually filled `description` instead — and computer_settings then
+            # made a SECOND Gemini call, inside the tool, purely to translate
+            # that sentence into one of these names. Every "turn the volume
+            # down" cost two model round trips.
+            #
+            # Naming the actions here costs ~600 characters once per session and
+            # removes a whole round trip from every computer command.
+            "action": {
+                "type": "STRING",
+                "description": (
+                    "The exact action. Prefer this over `description` — pick one of: "
+                    "volume_up | volume_down | volume_set | mute | "
+                    "brightness_up | brightness_down | sleep_display | "
+                    "pause_video | close_app | close_window | full_screen | "
+                    "minimize | maximize | snap_left | snap_right | "
+                    "switch_window | show_desktop | task_manager | focus_search | "
+                    "refresh_page | close_tab | new_tab | next_tab | prev_tab | "
+                    "go_back | go_forward | zoom_in | zoom_out | zoom_reset | "
+                    "find_on_page | scroll_up | scroll_down | scroll_top | "
+                    "scroll_bottom | page_up | page_down | copy | paste | cut | "
+                    "undo | redo | select_all | save | enter | escape | press_key | "
+                    "type_text | screenshot | lock_screen | open_settings | "
+                    "file_explorer | open_run | dark_mode | toggle_wifi | "
+                    "restart | shutdown"
+                )
+            },
+            "description": {
+                "type": "STRING",
+                "description": (
+                    "Fallback only, when no action name above fits. "
+                    "Resolved locally — no extra model call."
+                )
+            },
+            "value": {
+                "type": "STRING",
+                "description": "Optional value: volume level 0-100, text to type, key name, etc."
+            }
+        },
+        "required": []
+    },
+    "handler": computer_settings,
+}

@@ -834,3 +834,85 @@ def file_processor(parameters: dict, player=None, speak=None) -> str:
         import traceback
         traceback.print_exc()
         return f"Processing failed: {e}"
+
+
+# ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
+TOOL = {
+    "name": "file_processor",
+    "description": "Processes any file that the user has uploaded or dropped onto the interface. Use this when the user refers to an uploaded file and wants an action on it. Supports: images (describe/ocr/resize/compress/convert), PDFs (summarize/extract_text/to_word), Word docs & text files (summarize/fix/reformat/translate), CSV/Excel (analyze/stats/filter/sort/convert), JSON/XML (validate/format/analyze), code files (explain/review/fix/optimize/run/document/test), audio (transcribe/trim/convert/info), video (trim/extract_audio/extract_frame/compress/transcribe/info), archives (list/extract), presentations (summarize/extract_text). ALWAYS call this tool when a file has been uploaded and the user gives a command about it. If the user's command is ambiguous, pick the most logical action for that file type.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "file_path": {
+                "type": "STRING",
+                "description": "Full path to the uploaded file. Leave empty to use the currently uploaded file."
+            },
+            "action": {
+                "type": "STRING",
+                "description": "What to do with the file. Examples by type:\nimage: describe | ocr | resize | compress | convert | info\npdf: summarize | extract_text | to_word | info\ndocx/txt: summarize | fix | reformat | translate_hint | word_count | to_bullet\ncsv/excel: analyze | stats | filter | sort | convert | info\njson: validate | format | analyze | to_csv\ncode: explain | review | fix | optimize | run | document | test\naudio: transcribe | trim | convert | info\nvideo: trim | extract_audio | extract_frame | compress | transcribe | info | convert\narchive: list | extract\npptx: summarize | extract_text | analyze"
+            },
+            "instruction": {
+                "type": "STRING",
+                "description": "Free-form instruction if action doesn't cover it. E.g. 'translate this to Turkish', 'find all email addresses'"
+            },
+            "format": {
+                "type": "STRING",
+                "description": "Target format for conversion. E.g. 'mp3', 'pdf', 'csv', 'png'"
+            },
+            "width": {
+                "type": "INTEGER",
+                "description": "Target width for image resize"
+            },
+            "height": {
+                "type": "INTEGER",
+                "description": "Target height for image resize"
+            },
+            "scale": {
+                "type": "NUMBER",
+                "description": "Scale factor for image resize (e.g. 0.5)"
+            },
+            "quality": {
+                "type": "INTEGER",
+                "description": "Quality 1-100 for image/video compress"
+            },
+            "start": {
+                "type": "STRING",
+                "description": "Start time for trim: seconds or HH:MM:SS"
+            },
+            "end": {
+                "type": "STRING",
+                "description": "End time for trim: seconds or HH:MM:SS"
+            },
+            "timestamp": {
+                "type": "STRING",
+                "description": "Timestamp for video frame extraction HH:MM:SS"
+            },
+            "column": {
+                "type": "STRING",
+                "description": "Column name for CSV filter/sort"
+            },
+            "value": {
+                "type": "STRING",
+                "description": "Filter value for CSV filter"
+            },
+            "condition": {
+                "type": "STRING",
+                "description": "Filter condition: equals|contains|gt|lt"
+            },
+            "ascending": {
+                "type": "BOOLEAN",
+                "description": "Sort order for CSV sort (default: true)"
+            },
+            "save": {
+                "type": "BOOLEAN",
+                "description": "Save result to file (default: true)"
+            },
+            "destination": {
+                "type": "STRING",
+                "description": "Output folder for archive extract"
+            }
+        },
+        "required": []
+    },
+    "handler": file_processor,
+}

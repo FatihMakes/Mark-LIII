@@ -1,29 +1,59 @@
+# ── Core: UI, audio, Gemini Live ──────────────────────────────────────────────
 PyQt6
 sounddevice
+numpy
 google-genai>=2.8.0
-google-generativeai
-pillow
+
+# ── Web search & browser control ──────────────────────────────────────────────
 requests
 beautifulsoup4
-ddgs>=9.0.0
+duckduckgo-search
 playwright
+
+# ── Automation / input control ────────────────────────────────────────────────
 pyautogui
 pyperclip
 pygetwindow
+
+# ── Vision & media ────────────────────────────────────────────────────────────
+pillow
 opencv-python
-numpy
 mss
+
+# ── System, files & documents ─────────────────────────────────────────────────
 psutil
 send2trash
 youtube-transcript-api
 python-pptx
+openpyxl
+
+# ── Remote dashboard (control from your phone) ────────────────────────────────
 fastapi
 uvicorn[standard]
 cryptography
 python-multipart
-comtypes; sys_platform == "win32"
-pycaw; sys_platform == "win32"
-win10toast; sys_platform == "win32"
-pywinauto; sys_platform == "win32"
-pywin32; sys_platform == "win32"
 qrcode[pil]
+
+# ── Plugin extras: Gmail / Google Calendar (OAuth) ────────────────────────────
+google-api-python-client
+google-auth-oauthlib
+
+# ── Plugin extras: Tuya / Smart Life smart light (home_assistant) ─────────────
+tinytuya
+
+# ── Windows-only (pip skips these automatically on macOS / Linux) ─────────────
+comtypes;   sys_platform == "win32"
+pycaw;      sys_platform == "win32"
+win10toast; sys_platform == "win32"
+pywinauto;  sys_platform == "win32"
+pywin32;    sys_platform == "win32"
+wmi;        sys_platform == "win32"
+
+# ── Optional: local wake word ("Hey Jarvis") ──────────────────────────────────
+# Deliberately NOT installed by default — it's opt-in. Enable it (and download
+# the tiny model) with one click from ⚙ → WAKE WORD in the app, or install it
+# yourself with:  pip install openwakeword
+#
+# macOS / Linux OS actions (volume, brightness, reminders) shell out to native
+# tools (pactl / brightnessctl / osascript / systemd), so no extra Python
+# packages are needed there — nothing Windows-specific is ever pulled in.

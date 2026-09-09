@@ -1,4 +1,4 @@
-# ⚙️ MARK LII (52)
+# ⚙️ MARK LIII (53)
 ### The Ultimate Cross-Platform Personal AI Assistant — By FatihMakes
 
 > 📺 **[Watch the full setup video on YouTube](https://www.youtube.com/@FatihMakes)**
@@ -9,9 +9,9 @@ A real-time voice AI that can hear, see, understand, and control your computer �
 
 ## ✨ Overview
 
-MARK LII is the **personalization** release: the assistant that becomes *yours*. Pick the voice it speaks with, tune the colour of the whole HUD, and watch it power on with a boot chime and a swelling animation like a machine coming to life. The interface now breathes with you too — the waveform and the arc-reactor core pulse to your **real** voice while you speak and to JARVIS's own voice while it answers.
+**MARK LIII is the hands-free & scalable release.** Say **"Hey Jarvis"** and it wakes; stay quiet and it slips back to sleep on its own — while asleep, your microphone never leaves the machine, so an off-hand *"I'll be right there"* to someone in the room no longer sets it off. Under the hood it now runs on the faster **Gemini 3.1 Flash Live** engine, and the moment you ask for something that takes a beat — analysing a file, searching the web — it answers instantly *("On it — going through that now…")* so you never wonder whether it heard you.
 
-All of that sits on the Mark LI foundation: a plugin engine you extend without ever touching the core, native audio that hears the emotion in your voice, knows when you're not talking to it, and can hold one conversation for hours.
+It's also built to grow: every skill — bundled or drop-in — now **describes itself in its own file**, so adding a tool is a one-file operation and the core stays lean.
 
 It's not just an assistant — it's an extension of your digital life.
 
@@ -22,9 +22,10 @@ It's not just an assistant — it's an extension of your digital life.
 ### Core Features
 | Feature | Description |
 |---|---|
-| 🎙️ Voice Picker | Choose from 5 native Gemini voices and switch live from the UI — no restart |
-| 🎨 Live Theming | Recolour the entire HUD from a hue wheel or hex — applied instantly across every panel |
-| 〰️ Reactive HUD | Waveform and reactor core pulse to real audio — your mic while listening, JARVIS while speaking |
+| 🎙️ Wake Word | Local **"Hey Jarvis"** detection — sleeps until called, auto-sleeps after 2 min of silence, and never streams audio while asleep. Opt-in, one-click download, toggle & manual sleep/wake from the UI |
+| ⚡ Instant Acknowledgment | Speaks a short, context-aware reply in **your language** the instant a longer task starts — no more silent waiting |
+| 🚀 Faster Live Engine | Runs on **Gemini 3.1 Flash Live** — roughly 2× faster time-to-first-word than the previous model |
+| 🧩 Self-Describing Skills | Actions and plugins share one shape (`TOOL` / `PLUGIN` dict + `run()`), auto-discovered at launch — adding or moving a skill is a single file, no core edits |
 | 🧠 Recallable Memory | No size limit and nothing silently forgotten — the prompt carries what fits, the rest is looked up on demand from a local search |
 | 👁️ Memory Panel | See every fact JARVIS has stored about you, when it learned it, and delete any of it in one click |
 | ↩️ Undo | Take back what the assistant did — files it moved, renamed, created or wrote, and settings it changed |
@@ -33,8 +34,9 @@ It's not just an assistant — it's an extension of your digital life.
 | 🔗 Session Continuity | A dropped connection, a voice change or a device change no longer wipes the conversation |
 | 🧩 Plugin System | Drop a single `.py` file into `plugins/` — JARVIS learns a new skill on next launch |
 | 🎙️ Real-time Voice | Ultra-low latency conversation in any language via Gemini Live API |
-| 💓 Affective Dialog | Hears the emotion in your voice and adapts its tone in response |
-| 🤫 Proactive Audio | Knows when you're not talking to it — background chatter never triggers a reply |
+| 🎨 Live Theming | Recolour the entire HUD from a hue wheel or hex — applied instantly across every panel |
+| 〰️ Reactive HUD | Waveform and reactor core pulse to real audio — your mic while listening, JARVIS while speaking |
+| 🎙️ Voice Picker | Choose from 5 native Gemini voices and switch live from the UI — no restart |
 | ♾️ Unlimited Sessions | Sliding-window context compression — one conversation can last for hours |
 | 🖥️ System Control | Launch apps, adjust volume/brightness, WiFi, shortcuts, power — all by voice |
 | 🧩 Autonomous Tasks | High-level planning for complex multi-step goals via agent mode |
@@ -66,22 +68,23 @@ It's not just an assistant — it's an extension of your digital life.
 
 ---
 
-## 🆕 What's New in Mark LII
+## 🆕 What's New in Mark LIII
 
-Mark LII is about making JARVIS feel like *your own* machine. Four small-but-delightful upgrades — all universal: no hardcoded values, no bundled asset files, and no assumptions about your language or operating system.
+Mark LIII is about making JARVIS **hands-free, faster, and easy to extend** — all universal: no hardcoded language, no bundled asset files, works the same on Windows, macOS and Linux.
 
-### 🎙️ Voice Picker — Give JARVIS the Voice You Want
-JARVIS is no longer stuck with one voice. Open **⚙ Customise Assistant** and choose between five native Gemini voices — **Charon, Puck, Kore, Fenrir, Aoede** — each with its own character. The switch is live: the session rebuilds itself the instant you apply, so the new voice takes over without you restarting anything, and session resumption keeps your conversation going. The voice names are language-neutral, so the picker reads the same in every locale.
+### 🎙️ Wake Word — "Hey Jarvis"
+JARVIS can now sit quietly until you call it. Turn on **⚙ → WAKE WORD** (a one-click, opt-in download of a tiny local model) and it goes to sleep: the microphone is processed **only on your machine** by a local detector, and nothing is sent to the cloud until it hears **"Hey Jarvis."** Once awake it listens normally, then **auto-sleeps after 2 minutes** of silence. You can also **sleep/wake it by clicking** in the settings. Because it's a *local* gate, background chatter — *"I'm coming!"* to someone at home — never wakes it. It costs **zero** when off (the model isn't even loaded), and the detection runs in its own thread, so nothing else in the app slows down.
 
-### 🎨 Live Theming — Recolour the Entire Interface
-Drag the hue wheel (or type an exact hex code) and the whole HUD re-themes in real time — panels, borders, the reactor core, the waveform, every button. Make it classic arc-reactor cyan, Iron Man gold, hostile red, or anything in between. Your choice is saved and restored on the next launch.
+### ⚡ Instant Acknowledgment
+No more silent gaps. When you ask for something that takes a moment — reading an uploaded file, a web/research search, building code — JARVIS **immediately** says one short, natural sentence *in your language* (*"Right away — going through that file now."*) and *then* runs the tool. Instant actions (opening an app, volume) stay snappy with no chatter.
 
-### 〰️ Reactive HUD — The Interface Breathes With the Room
-The waveform and the arc-reactor core now respond to **real audio**, not a random animation. While JARVIS listens, they pulse to your microphone; while JARVIS speaks, they pulse to its own voice — louder speech, taller bars and a brighter, wider core. When the room goes quiet, everything settles back into a gentle idle ripple. It makes the assistant feel genuinely alive and connected to what's happening.
+### 🚀 Faster Live Engine — Gemini 3.1 Flash Live
+The live session moved to **`gemini-3.1-flash-live-preview`**, cutting the time-to-first-word roughly in half while keeping tools, all five voices, transcription, session resumption and sliding-window compression intact.
 
-Every launch now opens with a proper boot: a ~2.4-second cinematic **transform** sound — a reactor spinning up, servos locking into place, and a bright chord confirming "online" — plays as the HUD swells up from a dim point, rings spin up, and a bright pulse sweeps outward. It's synthesized entirely in code (no sound file to ship, identical on Windows, macOS and Linux), and you can turn it on or off any time from the **🔊 BOOT SOUND** toggle in the ⚙ controls. If a machine has no audio output, it simply stays silent — never an error.
+### 🧩 Self-Describing Skills — a Scalable Core
+Every bundled **action** now carries its own `TOOL` declaration in its own file (exactly like a drop-in **plugin's** `PLUGIN` dict), and the core auto-discovers them at launch. `main.py` no longer holds a giant list of tool definitions and dispatch branches — it shrank by hundreds of lines. Adding a new built-in skill, or promoting an `actions/*.py` file into a shareable plugin, is now just… moving a file.
 
-> Built on Mark LI's foundation: the **🧩 Plugin System** (extend JARVIS with a single drop-in file), **💓 Affective Dialog**, **🤫 Proactive Audio**, and **♾️ Unlimited Sessions** are all still here and unchanged.
+> Built on the Mark LI/LII foundation: the **🧩 Plugin System**, **♾️ Unlimited Sessions**, **🎨 Live Theming**, **〰️ Reactive HUD** and **🎙️ Voice Picker** are all still here.
 
 ---
 
@@ -98,7 +101,7 @@ The store was capped at **2,200 characters — the whole memory, not per entry**
 Storage and prompt budget are now separate problems:
 
 * **Nothing is deleted.** The cap is a runaway guard normal use never approaches, and if it is ever hit it says so in the activity log instead of on stdout.
-* **The prompt carries a core, not a dump.** Identity in full, then the most recently updated facts, budgeted — measured at **under 1,000 characters on a memory holding 61 stored facts.** That is *smaller* than the old whole-store cap, so sessions now connect with fewer tokens than before.
+* **The prompt carries a core, not a dump.** Identity in full, then the most recently updated facts, budgeted — measured at **971 characters on a memory holding 62 stored facts.** That is *smaller* than the old whole-store cap, so sessions now connect with fewer tokens than before.
 * **The rest is fetched on demand.** A `recall_memory` tool searches the full store locally — no network, no second model, well under a millisecond.
 
 The part that is easy to get wrong: **a model cannot look something up if it doesn't know the thing exists.** So the prompt also carries an **index of the keys** it had no room for. Without it, "who is Ayşe?" gets "I don't know" while `ayse_sister` sits on disk unread. That index interleaves categories rather than sorting by recency — sorted like the core, a memory with forty preferences pushed the one entry the index existed for off the end.
@@ -186,25 +189,28 @@ It is held in memory only, deliberately: writing it to disk would make a fresh l
 
 | Mark | Focus |
 |---|---|
-| **XLVIII** | Instant interrupt · parallel news · two-phase briefing · exponential backoff · vision cooldown |
 | **XLIX** | Auto-start · clipboard intelligence · assistant customization |
-| **L** | Session memory · background monitoring · proactive 2.0 · instant vision · parallel news search |
+| **L** | Session memory · background monitoring · proactive 2.0 · instant vision |
 | **LI** | Plugin system · affective dialog · proactive audio · unlimited sessions |
-| **LII** | Voice picker · live theming · reactive HUD |
-| **LIII+** | Plugin files: email · quiz mode · calendar · and more |
+| **LII** | Voice picker · live theming · reactive HUD · recallable memory · undo · real confirmation · audio device picker · session continuity |
+| **LIII** | Wake word · Gemini 3.1 Flash Live · instant acknowledgment · self-describing action/plugin architecture |
+| *shared* | The last five above also shipped to LIII, LIV and LV at the same time — moving up a Mark never loses them |
+| **LIV+** | Plugin files: email · quiz mode · calendar · home assistant · 3D-printer · and more |
 
 ---
 
 ## ⚡ Quick Start
 
 ```bash
-git clone https://github.com/FatihMakes/Mark-LII.git
-cd Mark-LII
-pip install -r requirements.txt
+git clone https://github.com/FatihMakes/Mark-LIII.git
+cd Mark-LIII
+python setup.py        # installs deps for YOUR OS + the browser automation engine
 python main.py
 ```
 
-> ⚠️ **Installation Note:** Some OS-specific dependencies are not bundled in `requirements.txt` to keep the repo lightweight. If you hit a `ModuleNotFoundError`, install the missing package with `pip install <module_name>`.
+`setup.py` only ever installs what your operating system needs — the Windows-only libraries are skipped automatically on macOS and Linux (and vice-versa). Prefer to do it by hand? `pip install -r requirements.txt` works too.
+
+> ⚠️ **Installation Note:** If you hit a `ModuleNotFoundError` for an OS-specific package, install it with `pip install <module_name>`. The optional **wake word** engine is *not* installed here — grab it in one click from **⚙ → WAKE WORD** inside the app.
 
 ---
 
@@ -214,31 +220,33 @@ python main.py
 | --- | --- |
 | **OS** | Windows 10/11, macOS, or Linux |
 | **Python** | 3.11 or 3.12 |
-| **Microphone** | Required for voice interaction |
+| **Microphone** | Required for voice interaction (and for the "Hey Jarvis" wake word) |
 | **Speakers** | Required for voice replies |
-| **API Key** | Free Gemini API key (`config/api_keys.json`) |
+| **API Key** | Free Gemini API key (entered on first launch → `config/api_keys.json`) |
+| **Wake word** *(optional)* | One-click download from ⚙ → WAKE WORD (`openwakeword`, a few MB, fully local) |
 
 ---
 
 ## 🗂️ Project Structure
 
 ```
-Mark LII/
-├── main.py                   # Core loop — Gemini Live session, audio I/O, live audio levels, tool dispatch
-├── ui.py                     # PyQt6 HUD — reactive waveform, boot animation, log panel, plugin manager, camera feed
-├── setup.py                  # First-run configuration wizard
+Mark LIII/
+├── main.py                   # Core loop — Gemini Live session, audio I/O, wake/sleep state, tool dispatch
+├── ui.py                     # PyQt6 HUD — reactive waveform, log panel, settings drawer, plugin manager, camera feed
+├── setup.py                  # OS-aware installer (skips wrong-OS dependencies)
 ├── plugins/
-│   └── _template.py          # Copy this to write a new plugin — one file, drop in, done
-├── actions/
+│   ├── _template.py          # Copy this to write a new plugin — one file, drop in, done
+│   └── ...                   # Drop-in skills (each self-describes via a PLUGIN dict + run())
+├── actions/                  # Bundled skills — each self-describes via a TOOL dict + handler
 │   ├── web_search.py         # Gemini + DDG parallel search (news, research, price, compare)
-│   ├── screen_processor.py   # Screen capture & webcam vision via Gemini Live
+│   ├── screen_processor.py   # Screen & webcam capture for vision
 │   ├── background_monitor.py # User-configured topic watching — daily DDG check, no crypto
 │   ├── proactive.py          # Proactive 2.0 — time/context/rotation-aware check-ins
 │   ├── reminder.py           # OS-native scheduled notifications
 │   ├── system_monitor.py     # CPU / RAM / GPU / temperature telemetry
-│   ├── computer_settings.py  # Volume, brightness, WiFi, power
+│   ├── computer_settings.py  # Volume, brightness, WiFi, power (per-OS)
 │   ├── computer_control.py   # Keyboard shortcuts, mouse, window management
-│   ├── open_app.py           # Application launcher
+│   ├── open_app.py           # Application launcher (per-OS name map)
 │   ├── browser_control.py    # Web browser control
 │   ├── file_controller.py    # File system operations
 │   ├── file_processor.py     # Document reading and summarization
@@ -252,16 +260,18 @@ Mark LII/
 │   └── desktop.py            # Desktop and taskbar control
 ├── memory/
 │   ├── memory_manager.py     # Load/save long_term.json — sessions, monitors, identity
-│   ├── config_manager.py     # api_keys.json access — key, OS, name, voice, colour, plugin toggles
+│   ├── config_manager.py     # api_keys.json access — key, OS, name, voice, colour, toggles
 │   └── long_term.json        # Persistent store: identity, preferences, projects, sessions, monitors
 ├── core/
 │   ├── prompt.txt            # Assistant personality and tool-routing rules
-│   ├── plugin_loader.py      # Plugin engine — discovery, validation, crash isolation
 │   ├── undo.py               # One shared undo stack — actions register how to reverse themselves
 │   ├── confirm.py            # Irreversible-action gate — the token is issued by the UI, not the model
-│   └── audio_devices.py      # Microphone / speaker list — filtered, measured, resolved by name
+│   ├── audio_devices.py      # Microphone / speaker list — filtered, measured, resolved by name
+│   ├── plugin_loader.py      # Plugin engine — discovery, validation, crash isolation
+│   ├── action_loader.py      # Bundled-action engine — the built-in twin of plugin_loader
+│   └── wake_word.py          # Local "Hey Jarvis" detector — own thread, offline, opt-in
 └── config/
-    └── api_keys.json         # API key, OS setting, assistant name, user name, voice, UI colour, audio devices
+    └── api_keys.json         # API key, OS setting, assistant name, user name, voice, UI colour, toggles
 ```
 
 ---

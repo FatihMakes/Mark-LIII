@@ -264,3 +264,33 @@ def send_message(
         player.write_log(f"[msg] {result}")
 
     return result
+
+
+# ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
+TOOL = {
+    "name": "send_message",
+    "description": "Sends a text message via WhatsApp, Telegram, or other messaging platform.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "receiver": {
+                "type": "STRING",
+                "description": "Recipient contact name"
+            },
+            "message_text": {
+                "type": "STRING",
+                "description": "The message to send"
+            },
+            "platform": {
+                "type": "STRING",
+                "description": "Platform: WhatsApp, Telegram, etc."
+            }
+        },
+        "required": [
+            "receiver",
+            "message_text",
+            "platform"
+        ]
+    },
+    "handler": send_message,
+}

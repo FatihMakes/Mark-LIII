@@ -1,22 +1,6 @@
 import platform as _platform
 import subprocess as _subprocess
 
-# ── Console encoding ─────────────────────────────────────────────────────────
-# Windows consoles default to a legacy codepage — cp1254 in Turkey, cp1251 in
-# Russia, cp932 in Japan. Printing an emoji there raises UnicodeEncodeError, and
-# several of these prints sit inside except handlers, so the handler itself dies
-# and skips the recovery code after it. Reconfiguring to UTF-8 with a
-# replacement fallback costs nothing and makes the app behave in every locale.
-import sys as _sys
-
-for _stream in ("stdout", "stderr"):
-    try:
-        _s = getattr(_sys, _stream, None)
-        if _s is not None and hasattr(_s, "reconfigure"):
-            _s.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass          # pythonw / redirected pipes / anything exotic — never fatal
-
 # ── Nuclear: force CREATE_NO_WINDOW on EVERY subprocess call on Windows ───────
 # This patches Popen itself, so no per-file flag is needed anywhere.
 if _platform.system() == "Windows":
@@ -31,6 +15,24 @@ if _platform.system() == "Windows":
     _subprocess.Popen = _Popen
 
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ── Console encoding ─────────────────────────────────────────────────────────
+# Status lines in this app carry emoji and arrows ("📤 file_controller → Moved:
+# a.txt → Documents/"). On a non-UTF-8 console — cp1254 on a Turkish Windows,
+# cp1251 on a Russian one, cp932 on a Japanese one — printing one of those
+# raises UnicodeEncodeError, and because the print sits after the tool's own
+# try/except, the exception escapes into the receive loop and takes the session
+# down. The assistant dies on a log line.
+#
+# Reconfiguring costs nothing and makes the app start the same way in every
+# locale. `errors="replace"` is the belt and braces — a console that genuinely
+# cannot render a glyph shows a box instead of killing the process.
+import sys as _sys
+for _stream in (_sys.stdout, _sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 import asyncio
 import re
@@ -53,23 +55,13 @@ from memory.memory_manager import (
     search_memory, set_trim_notifier,
 )
 
-from actions.file_processor import file_processor
-from actions.flight_finder     import flight_finder
-from actions.open_app          import open_app
-from actions.weather_report    import weather_action
-from actions.send_message      import send_message
-from actions.reminder          import reminder
-from actions.computer_settings import computer_settings
+# The file-backed tools (open_app, web_search, browser_control, …) are no longer
+# imported or declared here — they self-describe via a TOOL dict in their own
+# actions/*.py file and are auto-discovered by core.action_loader at startup.
+# Only tools that are tied to live-session state stay inline in this file
+# (screen_process, close_camera, save_memory, manage_monitor, shutdown_jarvis,
+# system_status).
 from actions.screen_processor  import _capture_camera, _capture_screen
-from actions.youtube_video     import youtube_video
-from actions.desktop           import desktop_control
-from actions.browser_control   import browser_control
-from actions.file_controller   import file_controller
-from actions.code_helper       import code_helper
-from actions.dev_agent         import dev_agent
-from actions.web_search        import web_search as web_search_action
-from actions.computer_control  import computer_control
-from actions.game_updater      import game_updater
 from actions.system_monitor    import SystemMonitor, get_system_status
 from actions.proactive         import ProactiveEngine
 from actions.background_monitor import (
@@ -77,12 +69,20 @@ from actions.background_monitor import (
 )
 from actions.web_search        import _news as _fetch_news_sync
 from memory.config_manager     import (
-    get_brief_enabled, get_voice, get_input_device, get_output_device,
+    get_brief_enabled, get_voice, get_wake_word_enabled, save_wake_word_enabled,    get_input_device, get_output_device,
 )
 from core.plugin_loader        import discover_plugins
 from core                      import undo as undo_stack
 from core                      import confirm as confirm_gate
 from core                      import audio_devices
+from core.action_loader        import discover_actions
+from core.wake_word            import (
+    WakeWordDetector, is_ready as wake_is_ready, install_and_download as wake_install,
+)
+
+# How long the assistant stays awake with no user speech before it auto-sleeps
+# again (wake-word mode only).
+WAKE_SLEEP_TIMEOUT = 120.0   # seconds (2 minutes)
 
 def get_base_dir():
     if getattr(sys, "frozen", False):
@@ -92,9 +92,9 @@ def get_base_dir():
 BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
-LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+LIVE_MODEL          = "models/gemini-3.1-flash-live-preview"
 CHANNELS            = 1
-SEND_SAMPLE_RATE    = 16000
+SEND_SAMPLE_RATE    = 16000 
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE          = 1024
 
@@ -143,44 +143,12 @@ def _clean_transcript(text: str) -> str:
     return text.strip()
 
 TOOL_DECLARATIONS = [
-    {
-        "name": "open_app",
-        "description": (
-            "Opens any application on the computer. "
-            "Use this whenever the user asks to open, launch, or start any app, "
-            "website, or program. Always call this tool — never just say you opened it."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "app_name": {
-                    "type": "STRING",
-                    "description": "Exact name of the application (e.g. 'WhatsApp', 'Chrome', 'Spotify')"
-                }
-            },
-            "required": ["app_name"]
-        }
-    },
-    {
-        "name": "web_search",
-        "description": (
-            "Searches the web. Use for ANY question about current facts, events, prices, "
-            "or topics — always prefer this over guessing. "
-            "Modes: 'search' (default), 'news' (latest headlines on a topic), "
-            "'research' (deep comprehensive answer), 'price' (product cost lookup), "
-            "'compare' (side-by-side comparison of items)."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "query":  {"type": "STRING", "description": "Search query or topic"},
-                "mode":   {"type": "STRING", "description": "search | news | research | price | compare"},
-                "items":  {"type": "ARRAY",  "items": {"type": "STRING"}, "description": "Items to compare (compare mode)"},
-                "aspect": {"type": "STRING", "description": "Comparison aspect: price | specs | reviews | features"},
-            },
-            "required": ["query"]
-        }
-    },
+    # ── Inline tools ─────────────────────────────────────────────────────────
+    # These stay here (rather than in an actions/*.py TOOL dict) because their
+    # handling is woven into live-session state — vision capture/injection,
+    # camera stream, memory writes, the monitor engine, and shutdown. All other
+    # tools live in their own action file and are auto-discovered by
+    # core.action_loader (see JarvisLive.__init__).
     {
         "name": "system_status",
         "description": (
@@ -191,61 +159,6 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {},
-        }
-    },
-    {
-        "name": "weather_report",
-        "description": "Gives the weather report to user",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "city": {"type": "STRING", "description": "City name"}
-            },
-            "required": ["city"]
-        }
-    },
-    {
-        "name": "send_message",
-        "description": "Sends a text message via WhatsApp, Telegram, or other messaging platform.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "receiver":     {"type": "STRING", "description": "Recipient contact name"},
-                "message_text": {"type": "STRING", "description": "The message to send"},
-                "platform":     {"type": "STRING", "description": "Platform: WhatsApp, Telegram, etc."}
-            },
-            "required": ["receiver", "message_text", "platform"]
-        }
-    },
-    {
-        "name": "reminder",
-        "description": "Sets a timed reminder using Task Scheduler.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "date":    {"type": "STRING", "description": "Date in YYYY-MM-DD format"},
-                "time":    {"type": "STRING", "description": "Time in HH:MM format (24h)"},
-                "message": {"type": "STRING", "description": "Reminder message text"}
-            },
-            "required": ["date", "time", "message"]
-        }
-    },
-    {
-        "name": "youtube_video",
-        "description": (
-            "Controls YouTube. Use for: playing videos, summarizing a video's content, "
-            "getting video info, or showing trending videos."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {"type": "STRING", "description": "play | summarize | get_info | trending (default: play)"},
-                "query":  {"type": "STRING", "description": "Search query for play action"},
-                "save":   {"type": "BOOLEAN", "description": "Save summary to Notepad (summarize only)"},
-                "region": {"type": "STRING", "description": "Country code for trending e.g. TR, US"},
-                "url":    {"type": "STRING", "description": "Video URL for get_info action"},
-            },
-            "required": []
         }
     },
     {
@@ -271,224 +184,10 @@ TOOL_DECLARATIONS = [
         "name": "close_camera",
         "description": (
             "Closes the live camera view shown on screen. "
-            "Call when user says: close camera, stop camera, turn off camera, "
-            "kamerayı kapat, kapat, creepy, etc."
+            "Call when the user says (in ANY language): close camera, stop camera, "
+            "turn off camera, that's creepy, etc."
         ),
         "parameters": {"type": "OBJECT", "properties": {}, "required": []}
-    },
-    {
-        "name": "computer_settings",
-        "description": (
-            "Controls the computer: volume, brightness, window management, keyboard shortcuts, "
-            "typing text on screen, closing apps, fullscreen, dark mode, WiFi, restart, shutdown, "
-            "scrolling, tab management, zoom, screenshots, lock screen, refresh/reload page. "
-            "Use for ANY single computer control command. "
-            "restart, shutdown and toggle_wifi put a confirmation on the user's screen "
-            "and do NOT happen until they press it — never claim they are done. "
-            "Volume, brightness and dark mode can be reversed with the `undo` tool."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                # The exact vocabulary, spelled out.
-                #
-                # This used to say only "The action to perform", so the model
-                # usually filled `description` instead — and computer_settings
-                # then made a SECOND Gemini call, inside the tool, purely to
-                # translate that sentence into one of these names. Every
-                # "turn the volume down" cost two model round trips.
-                "action": {
-                    "type": "STRING",
-                    "description": (
-                        "The exact action. Prefer this over `description` — pick one of: "
-                        "volume_up | volume_down | volume_set | mute | "
-                        "brightness_up | brightness_down | sleep_display | "
-                        "pause_video | close_app | close_window | full_screen | "
-                        "minimize | maximize | snap_left | snap_right | "
-                        "switch_window | show_desktop | task_manager | focus_search | "
-                        "refresh_page | close_tab | new_tab | next_tab | prev_tab | "
-                        "go_back | go_forward | zoom_in | zoom_out | zoom_reset | "
-                        "find_on_page | scroll_up | scroll_down | scroll_top | "
-                        "scroll_bottom | page_up | page_down | copy | paste | cut | "
-                        "undo | redo | select_all | save | enter | escape | press_key | "
-                        "type_text | screenshot | lock_screen | open_settings | "
-                        "file_explorer | open_run | dark_mode | toggle_wifi | "
-                        "restart | shutdown"
-                    ),
-                },
-                "description": {
-                    "type": "STRING",
-                    "description": (
-                        "Fallback only, when no action name above fits. "
-                        "Resolved locally — no extra model call."
-                    ),
-                },
-                "value":       {"type": "STRING", "description": "Optional value: volume level 0-100, text to type, key name, etc."}
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "browser_control",
-        "description": (
-            "Controls any web browser. Use for: opening websites, searching the web, "
-            "clicking elements, filling forms, scrolling, screenshots, navigation, any web-based task. "
-            "Simple open/search requests launch the user's own browser normally (their real profile "
-            "and logged-in accounts); interactive actions (click, type, fill_form...) attach an "
-            "automation browser. "
-            "Always pass the 'browser' parameter when the user specifies a browser (e.g. 'open in Edge', "
-            "'use Firefox', 'open Chrome'). Multiple browsers can run simultaneously."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action":      {"type": "STRING", "description": "go_to | search | click | type | scroll | fill_form | smart_click | smart_type | get_text | get_url | press | new_tab | close_tab | screenshot | back | forward | reload | switch | list_browsers | close | close_all"},
-                "browser":     {"type": "STRING", "description": "Target browser: chrome | edge | firefox | opera | operagx | brave | vivaldi | safari. Omit to use the currently active browser."},
-                "url":         {"type": "STRING", "description": "URL for go_to / new_tab action"},
-                "query":       {"type": "STRING", "description": "Search query for search action"},
-                "engine":      {"type": "STRING", "description": "Search engine: google | bing | duckduckgo | yandex (default: google)"},
-                "selector":    {"type": "STRING", "description": "CSS selector for click/type"},
-                "text":        {"type": "STRING", "description": "Text to click or type"},
-                "description": {"type": "STRING", "description": "Element description for smart_click/smart_type"},
-                "direction":   {"type": "STRING", "description": "up | down for scroll"},
-                "amount":      {"type": "INTEGER", "description": "Scroll amount in pixels (default: 500)"},
-                "key":         {"type": "STRING", "description": "Key name for press action (e.g. Enter, Escape, F5)"},
-                "path":        {"type": "STRING", "description": "Save path for screenshot"},
-                "incognito":   {"type": "BOOLEAN", "description": "Open in private/incognito mode"},
-                "clear_first": {"type": "BOOLEAN", "description": "Clear field before typing (default: true)"},
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "file_controller",
-        "description": "Manages files and folders: list, create, delete, move, copy, rename, read, write, find, disk usage.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action":      {"type": "STRING", "description": "list | create_file | create_folder | delete | move | copy | rename | read | write | find | largest | disk_usage | organize_desktop | info"},
-                "path":        {"type": "STRING", "description": "File/folder path or shortcut: desktop, downloads, documents, home"},
-                "destination": {"type": "STRING", "description": "Destination path for move/copy"},
-                "new_name":    {"type": "STRING", "description": "New name for rename"},
-                "content":     {"type": "STRING", "description": "Content for create_file/write"},
-                "name":        {"type": "STRING", "description": "File name to search for"},
-                "extension":   {"type": "STRING", "description": "File extension to search (e.g. .pdf)"},
-                "count":       {"type": "INTEGER", "description": "Number of results for largest"},
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "desktop_control",
-        "description": "Controls the desktop: wallpaper, organize, clean, list, stats.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action": {"type": "STRING", "description": "wallpaper | wallpaper_url | organize | clean | list | stats | task"},
-                "path":   {"type": "STRING", "description": "Image path for wallpaper"},
-                "url":    {"type": "STRING", "description": "Image URL for wallpaper_url"},
-                "mode":   {"type": "STRING", "description": "by_type or by_date for organize"},
-                "task":   {"type": "STRING", "description": "Natural language desktop task"},
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "code_helper",
-        "description": "Writes, edits, explains, runs, or builds code files.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action":      {"type": "STRING", "description": "write | edit | explain | run | build | auto (default: auto)"},
-                "description": {"type": "STRING", "description": "What the code should do or what change to make"},
-                "language":    {"type": "STRING", "description": "Programming language (default: python)"},
-                "output_path": {"type": "STRING", "description": "Where to save the file"},
-                "file_path":   {"type": "STRING", "description": "Path to existing file for edit/explain/run/build"},
-                "code":        {"type": "STRING", "description": "Raw code string for explain"},
-                "args":        {"type": "STRING", "description": "CLI arguments for run/build"},
-                "timeout":     {"type": "INTEGER", "description": "Execution timeout in seconds (default: 30)"},
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "dev_agent",
-        "description": "Builds complete multi-file projects from scratch: plans, writes files, installs deps, opens VSCode, runs and fixes errors.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "description":  {"type": "STRING", "description": "What the project should do"},
-                "language":     {"type": "STRING", "description": "Programming language (default: python)"},
-                "project_name": {"type": "STRING", "description": "Optional project folder name"},
-                "timeout":      {"type": "INTEGER", "description": "Run timeout in seconds (default: 30)"},
-            },
-            "required": ["description"]
-        }
-    },
-    {
-        "name": "computer_control",
-        "description": "Direct computer control: type, click, hotkeys, scroll, move mouse, screenshots, find elements on screen.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action":      {"type": "STRING", "description": "type | smart_type | click | double_click | right_click | hotkey | press | scroll | move | copy | paste | screenshot | wait | clear_field | focus_window | screen_find | screen_click | random_data | user_data"},
-                "text":        {"type": "STRING", "description": "Text to type or paste"},
-                "x":           {"type": "INTEGER", "description": "X coordinate"},
-                "y":           {"type": "INTEGER", "description": "Y coordinate"},
-                "keys":        {"type": "STRING", "description": "Key combination e.g. 'ctrl+c'"},
-                "key":         {"type": "STRING", "description": "Single key e.g. 'enter'"},
-                "direction":   {"type": "STRING", "description": "up | down | left | right"},
-                "amount":      {"type": "INTEGER", "description": "Scroll amount (default: 3)"},
-                "seconds":     {"type": "NUMBER",  "description": "Seconds to wait"},
-                "title":       {"type": "STRING",  "description": "Window title for focus_window"},
-                "description": {"type": "STRING",  "description": "Element description for screen_find/screen_click"},
-                "type":        {"type": "STRING",  "description": "Data type for random_data"},
-                "field":       {"type": "STRING",  "description": "Field for user_data: name|email|city"},
-                "clear_first": {"type": "BOOLEAN", "description": "Clear field before typing (default: true)"},
-                "path":        {"type": "STRING",  "description": "Save path for screenshot"},
-            },
-            "required": ["action"]
-        }
-    },
-    {
-        "name": "game_updater",
-        "description": (
-            "THE ONLY tool for ANY Steam or Epic Games request. "
-            "Use for: installing, downloading, updating games, listing installed games, "
-            "checking download status, scheduling updates. "
-            "ALWAYS call directly for any Steam/Epic/game request. "
-            "NEVER use browser_control or web_search for Steam/Epic."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "action":    {"type": "STRING",  "description": "update | install | list | download_status | schedule | cancel_schedule | schedule_status (default: update)"},
-                "platform":  {"type": "STRING",  "description": "steam | epic | both (default: both)"},
-                "game_name": {"type": "STRING",  "description": "Game name (partial match supported)"},
-                "app_id":    {"type": "STRING",  "description": "Steam AppID for install (optional)"},
-                "hour":      {"type": "INTEGER", "description": "Hour for scheduled update 0-23 (default: 3)"},
-                "minute":    {"type": "INTEGER", "description": "Minute for scheduled update 0-59 (default: 0)"},
-                "shutdown_when_done": {"type": "BOOLEAN", "description": "Shut down PC when download finishes"},
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "flight_finder",
-        "description": "Searches Google Flights and speaks the best options.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "origin":      {"type": "STRING",  "description": "Departure city or airport code"},
-                "destination": {"type": "STRING",  "description": "Arrival city or airport code"},
-                "date":        {"type": "STRING",  "description": "Departure date (any format)"},
-                "return_date": {"type": "STRING",  "description": "Return date for round trips"},
-                "passengers":  {"type": "INTEGER", "description": "Number of passengers (default: 1)"},
-                "cabin":       {"type": "STRING",  "description": "economy | premium | business | first"},
-                "save":        {"type": "BOOLEAN", "description": "Save results to Notepad"},
-            },
-            "required": ["origin", "destination", "date"]
-        }
     },
     {
         "name": "manage_monitor",
@@ -528,72 +227,6 @@ TOOL_DECLARATIONS = [
             "properties": {},
         }
     },
-    {
-    "name": "file_processor",
-    "description": (
-        "Processes any file that the user has uploaded or dropped onto the interface. "
-        "Use this when the user refers to an uploaded file and wants an action on it. "
-        "Supports: images (describe/ocr/resize/compress/convert), "
-        "PDFs (summarize/extract_text/to_word), "
-        "Word docs & text files (summarize/fix/reformat/translate), "
-        "CSV/Excel (analyze/stats/filter/sort/convert), "
-        "JSON/XML (validate/format/analyze), "
-        "code files (explain/review/fix/optimize/run/document/test), "
-        "audio (transcribe/trim/convert/info), "
-        "video (trim/extract_audio/extract_frame/compress/transcribe/info), "
-        "archives (list/extract), "
-        "presentations (summarize/extract_text). "
-        "ALWAYS call this tool when a file has been uploaded and the user gives a command about it. "
-        "If the user's command is ambiguous, pick the most logical action for that file type."
-    ),
-    "parameters": {
-        "type": "OBJECT",
-        "properties": {
-            "file_path": {
-                "type": "STRING",
-                "description": "Full path to the uploaded file. Leave empty to use the currently uploaded file."
-            },
-            "action": {
-                "type": "STRING",
-                "description": (
-                    "What to do with the file. Examples by type:\n"
-                    "image: describe | ocr | resize | compress | convert | info\n"
-                    "pdf: summarize | extract_text | to_word | info\n"
-                    "docx/txt: summarize | fix | reformat | translate_hint | word_count | to_bullet\n"
-                    "csv/excel: analyze | stats | filter | sort | convert | info\n"
-                    "json: validate | format | analyze | to_csv\n"
-                    "code: explain | review | fix | optimize | run | document | test\n"
-                    "audio: transcribe | trim | convert | info\n"
-                    "video: trim | extract_audio | extract_frame | compress | transcribe | info | convert\n"
-                    "archive: list | extract\n"
-                    "pptx: summarize | extract_text | analyze"
-                )
-            },
-            "instruction": {
-                "type": "STRING",
-                "description": "Free-form instruction if action doesn't cover it. E.g. 'translate this to Turkish', 'find all email addresses'"
-            },
-            "format": {
-                "type": "STRING",
-                "description": "Target format for conversion. E.g. 'mp3', 'pdf', 'csv', 'png'"
-            },
-            "width":     {"type": "INTEGER", "description": "Target width for image resize"},
-            "height":    {"type": "INTEGER", "description": "Target height for image resize"},
-            "scale":     {"type": "NUMBER",  "description": "Scale factor for image resize (e.g. 0.5)"},
-            "quality":   {"type": "INTEGER", "description": "Quality 1-100 for image/video compress"},
-            "start":     {"type": "STRING",  "description": "Start time for trim: seconds or HH:MM:SS"},
-            "end":       {"type": "STRING",  "description": "End time for trim: seconds or HH:MM:SS"},
-            "timestamp": {"type": "STRING",  "description": "Timestamp for video frame extraction HH:MM:SS"},
-            "column":    {"type": "STRING",  "description": "Column name for CSV filter/sort"},
-            "value":     {"type": "STRING",  "description": "Filter value for CSV filter"},
-            "condition": {"type": "STRING",  "description": "Filter condition: equals|contains|gt|lt"},
-            "ascending": {"type": "BOOLEAN", "description": "Sort order for CSV sort (default: true)"},
-            "save":      {"type": "BOOLEAN", "description": "Save result to file (default: true)"},
-            "destination": {"type": "STRING", "description": "Output folder for archive extract"},
-        },
-        "required": []
-    }
-},
     {
         "name": "save_memory",
         "description": (
@@ -717,14 +350,13 @@ def _keep_context_of(exc: BaseException) -> bool:
 
 
 class JarvisLive:
-
     def __init__(self, ui: JarvisUI):
         self.ui             = ui
-        self._asst_name     = "JARVIS"   # updated each session from config
+        self._asst_name     = "JARVI    S"   # updated each session from config
         self.session              = None
         self.audio_in_queue       = None
         self.out_queue            = None
-        self._loop                = None
+        self._loop                     = None
         self._is_speaking         = False
         self._speaking_lock       = threading.Lock()
         self._phone_active        = False   # True while phone mic is streaming; pauses PC mic
@@ -765,15 +397,129 @@ class JarvisLive:
         self._last_user_speech = time.monotonic()  # updated on every user utterance
         self._session_log: list[str] = []          # conversation turns for end-of-session summary
 
-        self._enhanced_live = True  # affective dialog + proactive audio; auto-disabled if the server rejects them
-        _core_names = {t["name"] for t in TOOL_DECLARATIONS}
+        self._enhanced_live = True  # proactive audio; auto-disabled if the server rejects it
+
+        _base_dir = Path(__file__).resolve().parent
+        _inline_names = {t["name"] for t in TOOL_DECLARATIONS}
+
+        # File-backed tools: every actions/*.py with a TOOL dict, discovered the
+        # same way plugins are. Reserved names = the inline tools above, so an
+        # action can never shadow one.
+        self._action_registry = discover_actions(
+            actions_dir=_base_dir / "actions",
+            reserved_names=_inline_names,
+            logger=lambda msg: print(f"[Actions] {msg}"),
+        )
+
+        # Plugins must not collide with either an inline tool or a discovered action.
+        _core_names = _inline_names | self._action_registry.names()
         self._plugin_registry = discover_plugins(
-            plugins_dir=Path(__file__).resolve().parent / "plugins",
+            plugins_dir=_base_dir / "plugins",
             core_tool_names=_core_names,
             logger=lambda msg: (print(f"[Plugins] {msg}"), self.ui.write_log(f"SYS: {msg}")),
         )
         self.ui.get_plugins = self._plugin_registry.list_for_ui
+        self.ui.get_plugin_settings = self._plugin_registry.settings_schemas  # ⚙ settings tab
         self.ui.request_say = self.plugin_say   # plugins: mid-task speech channel
+
+        # ── Wake word ────────────────────────────────────────────────────────
+        # _awake gates the mic (see _listen_audio) and the background speakers.
+        # It is True whenever wake word is OFF, so default behaviour is unchanged.
+        self._wake_enabled     = get_wake_word_enabled()
+        self._awake            = not self._wake_enabled
+        self._wake_detector: WakeWordDetector | None = None
+        self._wake_sleep_timeout = WAKE_SLEEP_TIMEOUT
+        # UI control surface for the Wake Word settings section.
+        self.ui.wake_is_ready    = wake_is_ready          # () -> bool
+        self.ui.wake_get_state   = self._wake_state       # () -> dict
+        self.ui.on_wake_toggle   = self._ui_wake_toggle   # (enable: bool) -> str
+        self.ui.on_wake_manual   = self._ui_wake_manual   # () -> toggle awake/asleep
+        self.ui.on_wake_install  = self._ui_wake_install  # () -> (ok, msg)
+
+    # ── Wake word: state machine ─────────────────────────────────────────────
+
+    def _wake_state(self) -> dict:
+        # A loaded, running detector is definitively ready; otherwise fall back
+        # to the cheap on-disk model-file check (no Model construction).
+        ready = bool(self._wake_detector and self._wake_detector.ready) or wake_is_ready()
+        return {"enabled": self._wake_enabled, "awake": self._awake, "ready": ready}
+
+    def _ensure_wake_detector(self) -> bool:
+        """Load the detector once (model loads on first start). Idempotent."""
+        if self._wake_detector is None:
+            self._wake_detector = WakeWordDetector(
+                on_detect=self._on_wake_detected,
+                logger=lambda m: (print(f"[Wake] {m}"), self.ui.write_log(f"SYS: {m}")),
+            )
+        if not self._wake_detector.ready:
+            return self._wake_detector.start()
+        return True
+
+    def _on_wake_detected(self) -> None:
+        """Called from the detector thread when 'Hey Jarvis' is heard."""
+        self.wake(reason="wake word")
+
+    def wake(self, reason: str = "wake word") -> None:
+        if self._awake:
+            return
+        self._awake = True
+        self._last_user_speech = time.monotonic()   # start the auto-sleep clock now
+        if not self.ui.muted:
+            self.ui.set_state("LISTENING")
+        self.ui.write_log(f"SYS: Awake — {reason}.")
+
+    def sleep(self, reason: str = "timeout") -> None:
+        if not self._awake:
+            return
+        self._awake = False
+        self.set_speaking(False)
+        self.ui.set_state("SLEEPING")
+        self.ui.write_log(f"SYS: Sleeping — {reason}. Say 'Hey Jarvis' to wake me.")
+
+    async def _run_sleep_watch(self) -> None:
+        """Auto-sleep after the configured silence window (wake-word mode only)."""
+        while True:
+            await asyncio.sleep(5)
+            if not self._wake_enabled or not self._awake:
+                continue
+            with self._speaking_lock:
+                speaking = self._is_speaking
+            if speaking:
+                continue
+            if (time.monotonic() - self._last_user_speech) > self._wake_sleep_timeout:
+                self.sleep(reason="no speech for 2 minutes")
+
+    # ── Wake word: UI callbacks (called from the Qt thread) ──────────────────
+
+    def _ui_wake_toggle(self, enable: bool) -> str:
+        """Enable/disable wake word from the settings UI. Returns a status token:
+        'enabled' | 'disabled' | 'need_download'."""
+        if enable:
+            if not wake_is_ready():
+                return "need_download"
+            self._wake_enabled = True
+            save_wake_word_enabled(True)
+            self._ensure_wake_detector()
+            self.sleep(reason="wake word enabled")
+            return "enabled"
+        else:
+            self._wake_enabled = False
+            save_wake_word_enabled(False)
+            self.wake(reason="wake word disabled")
+            return "disabled"
+
+    def _ui_wake_manual(self) -> None:
+        """Manual sleep/wake button in the UI."""
+        if not self._wake_enabled:
+            return
+        if self._awake:
+            self.sleep(reason="you tapped sleep")
+        else:
+            self.wake(reason="you tapped wake")
+
+    def _ui_wake_install(self) -> tuple[bool, str]:
+        """Download openwakeword + the model (runs in a UI worker thread)."""
+        return wake_install(logger=lambda m: self.ui.write_log(f"SYS: {m}"))
 
     def plugin_say(self, instruction: str) -> None:
         """
@@ -791,7 +537,7 @@ class JarvisLive:
         async def _say():
             try:
                 await self.session.send_client_content(
-                    turns={"parts": [{"text": instruction}]},
+                    turns={"role": "user", "parts": [{"text": instruction}]},
                     turn_complete=True,
                 )
             except Exception as e:
@@ -865,9 +611,15 @@ class JarvisLive:
     def _on_text_command(self, text: str):
         if not self._loop or not self.session:
             return
+        # Respect wake-word sleep: a typed command must not be answered while
+        # asleep either (the sleep gate is not just for the mic). Wake first with
+        # "Hey Jarvis" or the WAKE NOW button.
+        if self._wake_enabled and not self._awake:
+            self.ui.write_log("SYS: I'm asleep — say 'Hey Jarvis' or tap WAKE NOW first.")
+            return
         asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
-                turns={"parts": [{"text": text}]},
+                turns={"role": "user", "parts": [{"text": text}]},
                 turn_complete=True
             ),
             self._loop
@@ -905,7 +657,7 @@ class JarvisLive:
             return
         asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
-                turns={"parts": [{"text": text}]},
+                turns={"role": "user", "parts": [{"text": text}]},
                 turn_complete=True
             ),
             self._loop
@@ -966,7 +718,11 @@ class JarvisLive:
             output_audio_transcription={},
             input_audio_transcription={},
             system_instruction="\n".join(parts),
-            tools=[{"function_declarations": TOOL_DECLARATIONS + self._plugin_registry.get_tool_declarations()}],
+            tools=[{"function_declarations": (
+                TOOL_DECLARATIONS
+                + self._action_registry.get_tool_declarations()
+                + self._plugin_registry.get_tool_declarations()
+            )}],
             # Hand back the handle captured from the last session_resumption
             # update. `handle=None` is exactly the old behaviour (ask for
             # handles, start fresh), so the first connect of a run is unchanged.
@@ -987,10 +743,12 @@ class JarvisLive:
             ),
         )
         if self._enhanced_live:
-            # Affective dialog: JARVIS hears tone/emotion and adapts its voice.
             # Proactive audio: JARVIS stays silent when speech isn't addressed
             # to it (background chatter, talking to someone else in the room).
-            cfg["enable_affective_dialog"] = True
+            # (Affective dialog was dropped: gemini-3.1-flash-live does not
+            #  support it, and it never reliably detected tone in practice.
+            #  To restore it on a 2.5 native-audio model, add back:
+            #  cfg["enable_affective_dialog"] = True )
             cfg["proactivity"] = types.ProactivityConfig(proactive_audio=True)
         return types.LiveConnectConfig(**cfg)
 
@@ -1035,34 +793,6 @@ class JarvisLive:
                 else:
                     result = await loop.run_in_executor(None, undo_stack.undo_last)
 
-            elif name == "open_app":
-                r = await loop.run_in_executor(None, lambda: open_app(parameters=args, response=None, player=self.ui))
-                result = r or f"Opened {args.get('app_name')}."
-
-            elif name == "weather_report":
-                r = await loop.run_in_executor(None, lambda: weather_action(parameters=args, player=self.ui))
-                result = r or "Weather delivered."
-
-            elif name == "browser_control":
-                r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "file_controller":
-                r = await loop.run_in_executor(None, lambda: file_controller(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "send_message":
-                r = await loop.run_in_executor(None, lambda: send_message(parameters=args, response=None, player=self.ui, session_memory=None))
-                result = r or f"Message sent to {args.get('receiver')}."
-
-            elif name == "reminder":
-                r = await loop.run_in_executor(None, lambda: reminder(parameters=args, response=None, player=self.ui))
-                result = r or "Reminder set."
-
-            elif name == "youtube_video":
-                r = await loop.run_in_executor(None, lambda: youtube_video(parameters=args, response=None, player=self.ui))
-                result = r or "Done."
-
             elif name == "screen_process":
                 import time as _t_mod
                 _now = _t_mod.monotonic()
@@ -1098,52 +828,6 @@ class JarvisLive:
                 self.ui.stop_camera_stream()
                 result = "Camera closed."
 
-            elif name == "computer_settings":
-                r = await loop.run_in_executor(None, lambda: computer_settings(parameters=args, response=None, player=self.ui))
-                result = r or "Done."
-
-            elif name == "desktop_control":
-                r = await loop.run_in_executor(None, lambda: desktop_control(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "code_helper":
-                r = await loop.run_in_executor(None, lambda: code_helper(parameters=args, player=self.ui, speak=self.speak))
-                result = r or "Done."
-
-            elif name == "dev_agent":
-                r = await loop.run_in_executor(None, lambda: dev_agent(parameters=args, player=self.ui, speak=self.speak))
-                result = r or "Done."
-
-            elif name == "web_search":
-                r = await loop.run_in_executor(None, lambda: web_search_action(parameters=args, player=self.ui))
-                result = r or "Done."
-                # Mirror results to the on-screen content panel
-                _mode = args.get("mode", "search")
-                if r and not r.startswith("No results") and not r.startswith("Search failed"):
-                    _query = args.get("query") or ", ".join(args.get("items", []))
-                    _label = f"{_mode.upper()} — {_query[:38]}" if _query else _mode.upper()
-                    self.ui.show_content(_label, r)
-            elif name == "file_processor":
-                if not args.get("file_path") and self.ui.current_file:
-                    args["file_path"] = self.ui.current_file
-                r = await loop.run_in_executor(
-                    None,
-                    lambda: file_processor(parameters=args, player=self.ui, speak=self.speak)
-                )
-                result = r or "Done."
-
-            elif name == "computer_control":
-                r = await loop.run_in_executor(None, lambda: computer_control(parameters=args, player=self.ui))
-                result = r or "Done."
-
-            elif name == "game_updater":
-                r = await loop.run_in_executor(None, lambda: game_updater(parameters=args, player=self.ui, speak=self.speak))
-                result = r or "Done."
-
-            elif name == "flight_finder":
-                r = await loop.run_in_executor(None, lambda: flight_finder(parameters=args, player=self.ui))
-                result = r or "Done."
-
             elif name == "system_status":
                 r = await loop.run_in_executor(None, get_system_status)
                 result = str(r)
@@ -1168,7 +852,7 @@ class JarvisLive:
                     if self.session:
                         try:
                             await self.session.send_client_content(
-                                turns={"parts": [{"text": "Say a brief natural goodbye to the user."}]},
+                                turns={"role": "user", "parts": [{"text": "Say a brief natural goodbye to the user."}]},
                                 turn_complete=True,
                             )
                         except Exception:
@@ -1177,6 +861,23 @@ class JarvisLive:
                     import os as _os
                     _os._exit(0)
                 asyncio.create_task(_do_shutdown())
+
+            elif self._action_registry.has(name):
+                # file_processor: fall back to the currently-uploaded file when none is given
+                if name == "file_processor" and not args.get("file_path") and self.ui.current_file:
+                    args["file_path"] = self.ui.current_file
+                _ctx = {"player": self.ui, "speak": self.speak,
+                        "response": None, "session_memory": None}
+                r = await loop.run_in_executor(None, lambda: self._action_registry.run(name, args, _ctx))
+                result = r or "Done."
+                # web_search: mirror results to the on-screen content panel
+                if (name == "web_search" and r
+                        and not r.startswith("No results")
+                        and not r.startswith("Search failed")):
+                    _mode  = args.get("mode", "search")
+                    _query = args.get("query") or ", ".join(args.get("items", []))
+                    _label = f"{_mode.upper()} — {_query[:38]}" if _query else _mode.upper()
+                    self.ui.show_content(_label, r)
 
             else:
                 if self._plugin_registry.has(name):
@@ -1205,13 +906,35 @@ class JarvisLive:
     async def _send_realtime(self):
         while True:
             msg = await self.out_queue.get()
-            await self.session.send_realtime_input(media=msg)
+            # Gemini 3.x Live rejects the old realtime_input.media_chunks field
+            # (what `media=...` maps to) and closes the socket with a 1007. Send
+            # mic / phone PCM through the new `audio` field instead. Queue items
+            # are {"data": <bytes>, "mime_type": <str>} from _listen_audio and
+            # the phone relay.
+            await self.session.send_realtime_input(
+                audio=types.Blob(
+                    data=msg["data"],
+                    mime_type=msg.get("mime_type", "audio/pcm"),
+                )
+            )
 
     async def _listen_audio(self):
         print("[JARVIS] 🎤 Mic started")
         loop = asyncio.get_event_loop()
 
         def callback(indata, frames, time_info, status):
+            # ── Wake-word gate ───────────────────────────────────────────────
+            # While asleep, the mic audio NEVER goes to Gemini (nothing is
+            # streamed, so JARVIS can't respond to speech not addressed to it and
+            # nothing leaves the machine). Frames are instead handed to the local
+            # detector, which runs its model in ITS OWN thread — the cost here is
+            # only a queue push, so the audio path is never slowed. When wake word
+            # is off (default) or we're awake, this is a single boolean check.
+            if self._wake_enabled and not self._awake:
+                det = self._wake_detector
+                if det is not None:
+                    det.feed(indata)
+                return
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
             if not jarvis_speaking and not self.ui.muted and not self._phone_active:
@@ -1362,7 +1085,7 @@ class JarvisLive:
                                 b64 = _b64.b64encode(img_b).decode("ascii")
                                 print(f"[Vision] 📤 {len(img_b):,} bytes (angle={angle}) → main session")
                                 await self.session.send_client_content(
-                                    turns={"parts": [
+                                    turns={"role": "user", "parts": [
                                         {"inline_data": {"mime_type": mime_t, "data": b64}},
                                         {"text": question},
                                     ]},
@@ -1540,7 +1263,7 @@ class JarvisLive:
             self._turn_done_event.clear()
 
         await self.session.send_client_content(
-            turns={"parts": [{"text": p1}]},
+            turns={"role": "user", "parts": [{"text": p1}]},
             turn_complete=True,
         )
         self.ui.write_log("SYS: Briefing phase 1 (greeting) sent.")
@@ -1573,18 +1296,14 @@ class JarvisLive:
                     await asyncio.sleep(1.0)
 
                 try:
-                    news_text = await asyncio.wait_for(news_done, timeout=8.0)
-                except Exception as e:
-                    self.ui.write_log(f"SYS: News fetch timed out/failed: {e!r}")
+                    news_text = await asyncio.wait_for(news_done, timeout=4.0)
+                except Exception:
                     news_text = ""
 
                 if not self.session:
                     return
 
-                failed = (not news_text) or news_text.startswith(
-                    ("No news found", "Search failed", "Please provide")
-                )
-                if not failed:
+                if news_text and len(news_text) > 60:
                     # Show on UI content panel immediately
                     self.ui.show_content("NEWS — top world news today", news_text)
 
@@ -1594,16 +1313,13 @@ class JarvisLive:
                         f"is displayed on screen. Do not call any tools.{lang_str}"
                     )
                 else:
-                    self.ui.write_log(
-                        f"SYS: News unavailable — backend returned: {news_text[:120]!r}"
-                    )
                     p2 = (
                         "News headlines could not be fetched right now. "
                         f"Let the user know briefly.{lang_str}"
                     )
 
                 await self.session.send_client_content(
-                    turns={"parts": [{"text": p2}]},
+                    turns={"role": "user", "parts": [{"text": p2}]},
                     turn_complete=True,
                 )
                 self.ui.write_log("SYS: Briefing phase 2 (news) sent.")
@@ -1654,7 +1370,7 @@ class JarvisLive:
         while True:
             await asyncio.sleep(10)
             alert = await asyncio.to_thread(self._sys_monitor.check)
-            if not alert or not self.session:
+            if not alert or not self.session or not self._awake:
                 continue
             # Don't interrupt an active conversation
             with self._speaking_lock:
@@ -1663,7 +1379,7 @@ class JarvisLive:
                 continue
             try:
                 await self.session.send_client_content(
-                    turns={"parts": [{"text": alert}]},
+                    turns={"role": "user", "parts": [{"text": alert}]},
                     turn_complete=True,
                 )
             except Exception as e:
@@ -1675,7 +1391,7 @@ class JarvisLive:
         """Check user-configured topics once per day; speak alerts when new headlines appear."""
         await asyncio.sleep(300)          # wait 5 min after startup before first check
         while True:
-            if self.session:
+            if self.session and self._awake:
                 # Don't interrupt if user spoke recently or JARVIS is mid-sentence
                 with self._speaking_lock:
                     speaking = self._is_speaking
@@ -1693,7 +1409,7 @@ class JarvisLive:
                                 "One brief sentence only."
                             )
                             await self.session.send_client_content(
-                                turns={"parts": [{"text": msg}]},
+                                turns={"role": "user", "parts": [{"text": msg}]},
                                 turn_complete=True,
                             )
                             self.ui.write_log(f"SYS: Monitor alert sent.")
@@ -1713,7 +1429,7 @@ class JarvisLive:
         while True:
             await asyncio.sleep(60)   # evaluate once per minute
 
-            if not self.session:
+            if not self.session or not self._awake:
                 continue
 
             with self._speaking_lock:
@@ -1736,7 +1452,7 @@ class JarvisLive:
                     recent_turns = recent_turns or None,
                 )
                 await self.session.send_client_content(
-                    turns={"parts": [{"text": prompt}]},
+                    turns={"role": "user", "parts": [{"text": prompt}]},
                     turn_complete=True,
                 )
                 self.ui.write_log("SYS: Proactive check-in.")
@@ -1784,8 +1500,12 @@ class JarvisLive:
                         break
                     await asyncio.sleep(0.1)
                 if self.session:
+                    # A remote command is deliberate control and the phone user
+                    # has no desktop WAKE button — so it wakes JARVIS if asleep.
+                    if self._wake_enabled and not self._awake:
+                        self.wake(reason="remote command")
                     await self.session.send_client_content(
-                        turns={"parts": [{"text": text}]},
+                        turns={"role": "user", "parts": [{"text": text}]},
                         turn_complete=True,
                     )
                     self.ui.write_log(f"[Web]: {text}")
@@ -1843,8 +1563,8 @@ class JarvisLive:
                 config = self._build_config()
 
                 # Fresh client on every reconnect — avoids stale HTTP session state
-                # v1alpha carries the enhanced audio features (affective dialog,
-                # proactive audio); if they get rejected we fall back to v1beta.
+                # v1alpha carries proactive audio; if it gets rejected we fall
+                # back to v1beta.
                 client = genai.Client(
                     api_key=_get_api_key(),
                     http_options={"api_version": "v1alpha" if self._enhanced_live else "v1beta"}
@@ -1873,8 +1593,18 @@ class JarvisLive:
                         # and "it reconnected and still knows what we were doing"
                         # is the whole point, and it is invisible otherwise.
                         self.ui.write_log("SYS: Reconnected — conversation restored.")
-                    self.ui.set_state("LISTENING")
-                    self.ui.write_log("SYS: JARVIS online.")
+
+                    # Wake word: if enabled, come up ASLEEP (mic gated, silent)
+                    # until the user says "Hey Jarvis" or taps wake in the UI.
+                    if self._wake_enabled:
+                        self._ensure_wake_detector()
+                        self._awake = False
+                        self.ui.set_state("SLEEPING")
+                        self.ui.write_log("SYS: JARVIS online — sleeping. Say 'Hey Jarvis' to wake me.")
+                    else:
+                        self._awake = True
+                        self.ui.set_state("LISTENING")
+                        self.ui.write_log("SYS: JARVIS online.")
 
                     if self._dashboard:
                         await self._dashboard.broadcast({"type": "status", "state": "active"})
@@ -1888,11 +1618,14 @@ class JarvisLive:
                     tg.create_task(self._run_system_monitor())
                     tg.create_task(self._run_background_monitor())
                     tg.create_task(self._run_proactive_mode())
+                    tg.create_task(self._run_sleep_watch())
                     if self._dashboard:
                         tg.create_task(self._relay_phone_audio())
 
-                    # Morning briefing — fires once per process launch (if enabled)
-                    if not self._briefing_sent and get_brief_enabled():
+                    # Morning briefing — fires once per process launch (if enabled).
+                    # Skipped in wake-word mode: it comes up asleep, and a briefing
+                    # would mean talking while "asleep".
+                    if not self._briefing_sent and get_brief_enabled() and self._awake:
                         self._briefing_sent = True
                         tg.create_task(self._send_startup_briefing())
 
@@ -1939,18 +1672,17 @@ class JarvisLive:
                 print(f"[JARVIS] Error ({type(e).__name__}): {e}")
                 traceback.print_exc()
 
-                # Enhanced audio features rejected by the server (preview API
-                # drift) — drop them and reconnect with the plain config.
+                # Proactive audio rejected by the server (preview API drift) —
+                # drop it and reconnect with the plain config.
                 if self._enhanced_live and (
                     "INVALID_ARGUMENT" in err_str
-                    or "affective" in err_str.lower()
                     or "proactiv" in err_str.lower()
                     or "Unknown name" in err_str
                     or "unexpected keyword" in err_str
                 ):
                     self._enhanced_live = False
                     self.ui.write_log(
-                        "SYS: Advanced audio features unavailable — reconnecting without them."
+                        "SYS: Proactive audio unavailable — reconnecting without it."
                     )
                     continue
 
@@ -1974,8 +1706,8 @@ class JarvisLive:
                     _conn_backoff = min(getattr(self, "_conn_backoff", 3) * 2, 60)
                     self._conn_backoff = _conn_backoff
                     self.ui.write_log(
-                        f"NET: Bağlantı kurulamadı — {_conn_backoff}s sonra tekrar deneniyor. "
-                        "(VPN gerekiyor olabilir)"
+                        f"NET: Connection failed — retrying in {_conn_backoff}s. "
+                        "(a VPN may be required)"
                     )
                 else:
                     self._conn_backoff = 3

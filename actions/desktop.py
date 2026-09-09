@@ -478,3 +478,39 @@ def desktop_control(
     except Exception as e:
         print(f"[Desktop] Error: {e}")
         return f"Desktop control error: {e}"
+
+
+# ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
+TOOL = {
+    "name": "desktop_control",
+    "description": "Controls the desktop: wallpaper, organize, clean, list, stats.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "action": {
+                "type": "STRING",
+                "description": "wallpaper | wallpaper_url | organize | clean | list | stats | task"
+            },
+            "path": {
+                "type": "STRING",
+                "description": "Image path for wallpaper"
+            },
+            "url": {
+                "type": "STRING",
+                "description": "Image URL for wallpaper_url"
+            },
+            "mode": {
+                "type": "STRING",
+                "description": "by_type or by_date for organize"
+            },
+            "task": {
+                "type": "STRING",
+                "description": "Natural language desktop task"
+            }
+        },
+        "required": [
+            "action"
+        ]
+    },
+    "handler": desktop_control,
+}

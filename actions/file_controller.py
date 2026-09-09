@@ -95,7 +95,7 @@ _SAFE_ROOTS: list[Path] = [
 ]
 
 def _is_safe_path(target: Path) -> bool:
-    """Verilen path _SAFE_ROOTS içinde mi? Değilse işlemi reddet."""
+    """Is the given path inside _SAFE_ROOTS? If not, reject the operation."""
     try:
         resolved = target.resolve()
         return any(
@@ -158,22 +158,9 @@ def _resolve_path(raw: str) -> Path:
         "videos":    _get_videos(),
         "home":      Path.home(),
     }
-    raw   = raw.strip().strip('"').strip("'")
-    lower = raw.lower()
+    lower = raw.strip().lower()
     if lower in shortcuts:
         return shortcuts[lower]
-
-    # "desktop/notes/a.md" and "desktop\notes\a.md" — a shortcut followed by a
-    # sub-path.  Without this branch the whole string falls through to the
-    # relative-path return below and is resolved against the process CWD instead
-    # of the real Desktop: an "Access denied" when the project lives outside the
-    # home directory, or — worse — a silent write into a stray "desktop" folder
-    # inside the project when it lives inside it.
-    head, sep, rest = raw.replace("\\", "/").partition("/")
-    if sep and head.lower() in shortcuts:
-        rest = rest.strip("/")
-        return shortcuts[head.lower()] / rest if rest else shortcuts[head.lower()]
-
     return Path(raw).expanduser()
 
 def _format_size(b: int) -> str:
@@ -275,7 +262,7 @@ def delete_file(path: str, name: str = "") -> str:
         if not target.exists():
             return f"Not found: {target.name}"
 
-        # Güvenli dizin kontrolü — kritik kullanıcı klasörlerini koru
+        # Safe-directory check — protect critical user folders
         protected = {
             _get_desktop(), _get_downloads(), _get_documents(),
             _get_pictures(), _get_music(), _get_videos(), Path.home()
@@ -461,7 +448,7 @@ def find_files(name: str = "", extension: str = "",
 
         results    = []
         dir_count  = 0
-        max_dirs   = 500  # performans + güvenlik limiti
+        max_dirs   = 500  # performance + safety limit
 
         for item in search_path.rglob("*"):
             if item.is_dir():
@@ -556,7 +543,7 @@ def organize_desktop() -> str:
 
     try:
         for item in desktop.iterdir():
-            # Klasörlere, gizli dosyalara ve organize klasörlerine dokunma
+            # Leave folders, hidden files and organize-folders untouched
             if item.is_dir() or item.name.startswith("."):
                 continue
             if item.name in {k for k in type_map}:
@@ -719,3 +706,51 @@ def file_controller(
 
     except Exception as e:
         return f"File controller error ({action}): {e}"
+
+
+# ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
+TOOL = {
+    "name": "file_controller",
+    "description": "Manages files and folders: list, create, delete, move, copy, rename, read, write, find, disk usage.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "action": {
+                "type": "STRING",
+                "description": "list | create_file | create_folder | delete | move | copy | rename | read | write | find | largest | disk_usage | organize_desktop | info"
+            },
+            "path": {
+                "type": "STRING",
+                "description": "File/folder path or shortcut: desktop, downloads, documents, home"
+            },
+            "destination": {
+                "type": "STRING",
+                "description": "Destination path for move/copy"
+            },
+            "new_name": {
+                "type": "STRING",
+                "description": "New name for rename"
+            },
+            "content": {
+                "type": "STRING",
+                "description": "Content for create_file/write"
+            },
+            "name": {
+                "type": "STRING",
+                "description": "File name to search for"
+            },
+            "extension": {
+                "type": "STRING",
+                "description": "File extension to search (e.g. .pdf)"
+            },
+            "count": {
+                "type": "INTEGER",
+                "description": "Number of results for largest"
+            }
+        },
+        "required": [
+            "action"
+        ]
+    },
+    "handler": file_controller,
+}

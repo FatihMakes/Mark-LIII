@@ -115,10 +115,10 @@ _VALID_INTENTS = {"write", "edit", "explain", "run", "build", "screen_debug", "o
 
 def _detect_intent(description: str, file_path: str, code: str) -> str:
     """
-    Dil bağımsız niyet tespiti — sabit anahtar kelime listesi YOK.
-    Kullanıcı hangi dilde konuşursa konuşsun, açıklama Gemini'ye
-    sınıflandırtılır. API'ye ulaşılamazsa dile bakmayan yapısal
-    ipuçlarına (dosya diskte var mı, kod verilmiş mi) düşülür.
+    Language-independent intent detection — NO fixed keyword list.
+    Whatever language the user speaks, the description is classified by
+    Gemini. If the API is unreachable, it falls back to language-agnostic
+    structural hints (does the file exist on disk, was code provided).
     """
     desc        = (description or "").strip()
     file_exists = bool(file_path) and Path(file_path).exists()
@@ -152,7 +152,7 @@ def _detect_intent(description: str, file_path: str, code: str) -> str:
         except Exception as e:
             print(f"[Code] Intent classification failed ({e}) — structural fallback")
 
-    # Yapısal geri dönüş — hiçbir dile bağlı değil
+    # Structural fallback — not tied to any language
     if file_exists:
         return "edit" if desc else "explain"
     if code:
@@ -582,3 +582,51 @@ def code_helper(
 
     else:
         return f"Unknown action: '{action}'. Use write, edit, explain, run, build, optimize, or screen_debug."
+
+
+# ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
+TOOL = {
+    "name": "code_helper",
+    "description": "Writes, edits, explains, runs, or builds code files.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "action": {
+                "type": "STRING",
+                "description": "write | edit | explain | run | build | auto (default: auto)"
+            },
+            "description": {
+                "type": "STRING",
+                "description": "What the code should do or what change to make"
+            },
+            "language": {
+                "type": "STRING",
+                "description": "Programming language (default: python)"
+            },
+            "output_path": {
+                "type": "STRING",
+                "description": "Where to save the file"
+            },
+            "file_path": {
+                "type": "STRING",
+                "description": "Path to existing file for edit/explain/run/build"
+            },
+            "code": {
+                "type": "STRING",
+                "description": "Raw code string for explain"
+            },
+            "args": {
+                "type": "STRING",
+                "description": "CLI arguments for run/build"
+            },
+            "timeout": {
+                "type": "INTEGER",
+                "description": "Execution timeout in seconds (default: 30)"
+            }
+        },
+        "required": [
+            "action"
+        ]
+    },
+    "handler": code_helper,
+}

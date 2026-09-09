@@ -435,3 +435,37 @@ def youtube_video(
     except Exception as e:
         print(f"[YouTube] ❌ Error in {action}: {e}")
         return f"YouTube {action} failed, sir: {e}"
+
+
+# ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
+TOOL = {
+    "name": "youtube_video",
+    "description": "Controls YouTube. Use for: playing videos, summarizing a video's content, getting video info, or showing trending videos.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "action": {
+                "type": "STRING",
+                "description": "play | summarize | get_info | trending (default: play)"
+            },
+            "query": {
+                "type": "STRING",
+                "description": "Search query for play action"
+            },
+            "save": {
+                "type": "BOOLEAN",
+                "description": "Save summary to Notepad (summarize only)"
+            },
+            "region": {
+                "type": "STRING",
+                "description": "Country code for trending e.g. TR, US"
+            },
+            "url": {
+                "type": "STRING",
+                "description": "Video URL for get_info action"
+            }
+        },
+        "required": []
+    },
+    "handler": youtube_video,
+}

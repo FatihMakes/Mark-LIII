@@ -19,8 +19,8 @@ else:
     _WIN_HIDE: dict = {}
 
 from PyQt6.QtCore import (
-    QEasingCurve, QMimeData, QObject, QPointF, QRectF, QSize, Qt,
-    QTimer, QUrl, pyqtSignal,
+    QEasingCurve, QMimeData, QObject, QParallelAnimationGroup, QPointF,
+    QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal,
 )
 from PyQt6.QtGui import (
     QBrush, QColor, QConicalGradient, QDragEnterEvent, QDropEvent, QFont,
@@ -32,6 +32,15 @@ from PyQt6.QtWidgets import (
     QMainWindow, QPushButton, QScrollArea, QSizePolicy, QSplitter,
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QProgressBar,
 )
+
+# ── Which Mark this is ───────────────────────────────────────────────────────
+# One constant, read by the window title, the header badge and the PROTOCOL
+# panel. It used to be typed separately in each of those places, and they drifted:
+# Mark 52 and 53 shipped showing "PROTOCOL XLIX" — the number from Mark 49 — and
+# Mark 55 shipped titled "MARK 54". Deriving the protocol from the name means a
+# release bump is this one line.
+APP_VERSION  = "MARK LIII"
+APP_PROTOCOL = APP_VERSION.split()[-1]
 
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -83,7 +92,7 @@ class C:
     BAR_BG    = "#011520"
 
 
-# Ana renge (accent) bağlı anahtarlar — durum renkleri (ACC, GREEN, RED…) sabit kalır
+# Keys tied to the accent colour — status colours (ACC, GREEN, RED…) stay fixed
 _HUE_LINKED = (
     "BG", "PANEL", "PANEL2", "BORDER", "BORDER_B", "BORDER_A",
     "PRI", "PRI_DIM", "PRI_GHO", "TEXT", "TEXT_DIM", "TEXT_MED",
@@ -96,10 +105,10 @@ DEFAULT_UI_COLOR = _PALETTE_DEFAULTS["PRI"]
 
 def apply_ui_accent(accent_hex: str) -> bool:
     """
-    Seçilen accent rengine göre tüm turkuaz-ailesi paleti yeniden türetir
-    (hue kaydırma — parlaklık/doygunluk oranları korunur, tasarım bozulmaz).
-    Boyanan öğeler (HUD, dalga formu, metrikler) bir sonraki karede yeni
-    rengi alır; stylesheet tabanlı paneller yeniden kurulduklarında alır.
+    Re-derives the whole teal-family palette from the chosen accent colour
+    (hue shift — brightness/saturation ratios are preserved, design stays intact).
+    Painted elements (HUD, waveform, metrics) pick up the new colour on the next
+    frame; stylesheet-based panels pick it up when they are rebuilt.
     """
     import colorsys
 
@@ -120,7 +129,7 @@ def apply_ui_accent(accent_hex: str) -> bool:
     base_h            = _hsv(_PALETTE_DEFAULTS["PRI"])[0]
     acc_h, acc_s, _av = _hsv(accent_hex)
     dh   = acc_h - base_h
-    grey = acc_s < 0.08   # griye yakın accent → tüm tema desaturize edilir
+    grey = acc_s < 0.08   # near-grey accent → the whole theme is desaturated
 
     for key, hex0 in _PALETTE_DEFAULTS.items():
         h, s, v = _hsv(hex0)
@@ -133,16 +142,16 @@ def apply_ui_accent(accent_hex: str) -> bool:
 
 
 def current_palette() -> dict[str, str]:
-    """C sınıfındaki accent'e bağlı renklerin anlık kopyası."""
+    """A snapshot of the accent-linked colours currently on class C."""
     return {k: getattr(C, k) for k in _HUE_LINKED}
 
 
 def retheme_all_widgets(old: dict[str, str], new: dict[str, str]) -> None:
     """
-    CANLI tam tema değişimi. Uygulamadaki HER widget'ın stylesheet'inde eski
-    palet renklerini yenileriyle değiştirir ve yeniden çizdirir. Böylece renk
-    değişimi yalnızca boyanan öğelerde değil, panel/buton/kenarlık dahil tüm
-    arayüzde ANINDA uygulanır — yeniden başlatma gerekmez.
+    LIVE full theme change. Replaces the old palette colours with the new ones
+    in EVERY widget's stylesheet across the app and repaints them. This way the
+    colour change applies INSTANTLY across the whole interface — panels, buttons,
+    borders included — not just the painted elements. No restart needed.
     """
     mapping = {old[k].lower(): new[k].lower()
                for k in old if old[k].lower() != new.get(k, old[k]).lower()}
@@ -225,6 +234,16 @@ class _SysMetrics:
         self._last_net = psutil.net_io_counters()
         self._last_net_t = time.time()
         self._running = True
+        # Probe caches — GPU (NVML) and temperature (WMI) are the expensive
+        # queries; initialise their handles once and reuse them instead of
+        # rebuilding a connection on every poll.
+        self._slow_tick = 0            # gpu/temp refreshed every 3rd cycle
+        self._pynvml    = None         # cached pynvml module + device handle
+        self._pynvml_h  = None
+        self._pynvml_ok = None         # None=untested, False=unavailable here
+        self._nv_unix   = None         # cached (lib, dev) for Linux/macOS NVML
+        self._wmi_conn  = None         # cached WMI connection (creating one is slow)
+        self._wmi_ok    = None         # None=untested, False=unavailable here
         t = threading.Thread(target=self._loop, daemon=True)
         t.start()
 
@@ -234,7 +253,7 @@ class _SysMetrics:
                 self._update()
             except Exception:
                 pass
-            time.sleep(1.5)
+            time.sleep(2.0)
 
     def _update(self):
         cpu = psutil.cpu_percent(interval=None)
@@ -252,9 +271,16 @@ class _SysMetrics:
         self._last_net   = nc
         self._last_net_t = now
 
-        gpu = self._get_gpu()
-
-        tmp = self._get_temp()
+        # GPU and temperature change slowly and are the most expensive probes
+        # (NVML / WMI) — refresh them every 3rd cycle (~6 s) instead of every
+        # cycle, reusing the previous reading in between.
+        self._slow_tick = (self._slow_tick + 1) % 3
+        if self._slow_tick == 1:
+            gpu = self._get_gpu()
+            tmp = self._get_temp()
+        else:
+            gpu = self.gpu
+            tmp = self.tmp
 
         with self._lock:
             self.cpu = cpu
@@ -264,31 +290,41 @@ class _SysMetrics:
             self.tmp = tmp
 
     def _get_gpu(self) -> float:
-        # pynvml — subprocess-free, works on all platforms if installed
-        try:
-            import pynvml  # type: ignore
-            pynvml.nvmlInit()
-            h = pynvml.nvmlDeviceGetHandleByIndex(0)
-            return float(pynvml.nvmlDeviceGetUtilizationRates(h).gpu)
-        except Exception:
-            pass
+        # pynvml — subprocess-free; initialise once and reuse the handle.
+        # Re-initialising NVML on every poll is slow, so cache it and stop
+        # retrying pynvml entirely once it proves unavailable here.
+        if self._pynvml_ok is not False:
+            try:
+                if self._pynvml_h is None:
+                    import pynvml  # type: ignore
+                    pynvml.nvmlInit()
+                    self._pynvml    = pynvml
+                    self._pynvml_h  = pynvml.nvmlDeviceGetHandleByIndex(0)
+                    self._pynvml_ok = True
+                return float(self._pynvml.nvmlDeviceGetUtilizationRates(self._pynvml_h).gpu)
+            except Exception:
+                self._pynvml_ok = False
 
         # Windows: nvml.dll via ctypes (already cached in _nvml_gpu_windows)
         if _OS == "Windows":
             return _nvml_gpu_windows()
 
-        # Linux / macOS: libnvidia-ml shared lib via ctypes
+        # Linux / macOS: libnvidia-ml shared lib via ctypes — init once, reuse
         try:
             import ctypes
-            _lib = "libnvidia-ml.so.1" if _OS == "Linux" else "libnvidia-ml.dylib"
 
             class _Util(ctypes.Structure):
                 _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
 
-            nv = ctypes.CDLL(_lib)
-            nv.nvmlInit_v2()
-            dev = ctypes.c_void_p()
-            nv.nvmlDeviceGetHandleByIndex_v2(0, ctypes.byref(dev))
+            if self._nv_unix is None:
+                _lib = "libnvidia-ml.so.1" if _OS == "Linux" else "libnvidia-ml.dylib"
+                nv = ctypes.CDLL(_lib)
+                nv.nvmlInit_v2()
+                dev = ctypes.c_void_p()
+                nv.nvmlDeviceGetHandleByIndex_v2(0, ctypes.byref(dev))
+                self._nv_unix = (nv, dev)
+
+            nv, dev = self._nv_unix
             u = _Util()
             nv.nvmlDeviceGetUtilizationRates(dev, ctypes.byref(u))
             return float(u.gpu)
@@ -311,16 +347,20 @@ class _SysMetrics:
         except Exception:
             pass
 
-        # Windows: wmi module (pure Python COM, zero subprocess)
-        if _OS == "Windows":
+        # Windows: wmi module (pure Python COM, zero subprocess). Reuse a single
+        # connection — building a fresh wmi.WMI() on every poll spins up a COM
+        # connection each time and is very slow. Give up after one failure.
+        if _OS == "Windows" and self._wmi_ok is not False:
             try:
-                import wmi  # type: ignore
-                w = wmi.WMI(namespace="root/wmi")
-                tz = w.MSAcpi_ThermalZoneTemperature()
+                if self._wmi_conn is None:
+                    import wmi  # type: ignore
+                    self._wmi_conn = wmi.WMI(namespace="root/wmi")
+                tz = self._wmi_conn.MSAcpi_ThermalZoneTemperature()
                 if tz:
                     return (tz[0].CurrentTemperature / 10.0) - 273.15
             except Exception:
-                pass
+                self._wmi_ok   = False
+                self._wmi_conn = None
 
         return -1.0   # N/A — zero subprocess on all platforms
 
@@ -363,6 +403,16 @@ class HudCanvas(QWidget):
         self._blink_tick = 0
         self._particles: list[list[float]] = []
         self._face_px: QPixmap | None = None
+        # Rescaled-face cache: the smooth rescale is expensive, so we keep the
+        # last result and only rebuild it when the (quantised) size changes.
+        self._face_cache: QPixmap | None = None
+        self._face_cache_sz = -1
+        # Static grid-dot layer, pre-rendered once per size/theme into a pixmap
+        # so paintEvent blits it in one call instead of thousands of drawPoint()s.
+        self._grid_cache: QPixmap | None = None
+        self._grid_key = None
+        # Repaint throttle counter (idle frames drop to ~20 Hz — see _step()).
+        self._paint_tick = 0
         self._load_face(face_path)
 
         # Live audio reactivity: _live_amp is written from the audio threads
@@ -407,6 +457,23 @@ class HudCanvas(QWidget):
             self._face_px = px
         except Exception:
             self._face_px = None
+        # New source image → drop the rescaled cache so it rebuilds on next paint.
+        self._face_cache    = None
+        self._face_cache_sz = -1
+
+    def _make_grid(self, W: int, H: int) -> QPixmap:
+        """Pre-render the static grid-dot background into a transparent pixmap so
+        paintEvent can blit it once per frame instead of running a nested
+        drawPoint() loop across the whole widget every 16 ms."""
+        pm = QPixmap(max(1, W), max(1, H))
+        pm.fill(Qt.GlobalColor.transparent)
+        gp = QPainter(pm)
+        gp.setPen(QPen(qcol(C.PRI_GHO), 1))
+        for x in range(0, W, 48):
+            for y in range(0, H, 48):
+                gp.drawPoint(x, y)
+        gp.end()
+        return pm
 
     def _step(self):
         self._tick += 1
@@ -481,7 +548,20 @@ class HudCanvas(QWidget):
         if self._blink_tick >= 38:
             self._blink = not self._blink
             self._blink_tick = 0
-        self.update()
+            _blinked = True
+        else:
+            _blinked = False
+
+        # Repaint throttling — advancing the animation state above is cheap at
+        # 60 Hz, but the paint is heavy. Repaint every frame while something is
+        # actually happening (speaking, audio, thinking) or when the blink
+        # toggles; otherwise drop to ~20 Hz so an idle HUD stops pinning a CPU
+        # core. The visuals stay smooth because the state keeps stepping.
+        self._paint_tick = (self._paint_tick + 1) % 3
+        active = (self.speaking or amp > 0.02
+                  or self.state in ("THINKING", "PROCESSING"))
+        if active or _blinked or self._paint_tick == 0:
+            self.update()
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -494,11 +574,13 @@ class HudCanvas(QWidget):
         cx, cy = W / 2, H / 2
         fw = min(W, H)
 
-        # grid dots
-        p.setPen(QPen(qcol(C.PRI_GHO), 1))
-        for x in range(0, W, 48):
-            for y in range(0, H, 48):
-                p.drawPoint(x, y)
+        # grid dots — blitted from a cached layer; rebuilt only when the size
+        # or the theme's ghost colour changes (so live re-theming still works).
+        _gkey = (W, H, C.PRI_GHO)
+        if self._grid_cache is None or self._grid_key != _gkey:
+            self._grid_cache = self._make_grid(W, H)
+            self._grid_key   = _gkey
+        p.drawPixmap(0, 0, self._grid_cache)
 
         r_face = fw * 0.31
 
@@ -575,13 +657,20 @@ class HudCanvas(QWidget):
 
         # face
         if self._face_px:
-            fsz    = int(fw * 0.62 * self._scale)
-            scaled = self._face_px.scaled(
-                fsz, fsz,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            p.drawPixmap(int(cx - fsz / 2), int(cy - fsz / 2), scaled)
+            fsz = int(fw * 0.62 * self._scale)
+            # Quantise the target size so the expensive smooth rescale only runs
+            # when it visibly changes — not on every 1 px "breathing" step.
+            q_sz = max(1, (fsz // 4) * 4)
+            if self._face_cache is None or self._face_cache_sz != q_sz:
+                self._face_cache = self._face_px.scaled(
+                    q_sz, q_sz,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self._face_cache_sz = q_sz
+            scaled = self._face_cache
+            p.drawPixmap(int(cx - scaled.width() / 2),
+                         int(cy - scaled.height() / 2), scaled)
         else:
             orb_r = int(fw * 0.27 * self._scale)
             oc    = (200, 0, 50) if self.muted else (0, 60, 110)
@@ -663,7 +752,10 @@ class MetricBar(QWidget):
         self.setMinimumWidth(80)
 
     def set_value(self, pct: float, text: str):
-        self._value = max(0.0, min(100.0, pct))
+        v = max(0.0, min(100.0, pct))
+        if v == self._value and text == self._text:
+            return          # unchanged — skip the repaint
+        self._value = v
         self._text  = text
         self.update()
 
@@ -715,6 +807,10 @@ class LogWidget(QTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
+        # Cap scrollback so an hours-long session can't grow the document
+        # without bound — keeps memory flat and every insert cheap. Oldest
+        # lines drop off the top automatically.
+        self.document().setMaximumBlockCount(600)
         self.setFont(QFont("Courier New", 9))
         self.setStyleSheet(f"""
             QTextEdit {{
@@ -852,6 +948,12 @@ class FileDropZone(QWidget):
         layout.addWidget(self._canvas)
 
     def _animate(self):
+        # The marching-ants dashed border is only meaningful while the user is
+        # hovering or dragging a file over the zone. When idle, skip the repaint
+        # entirely instead of redrawing the whole zone 25×/s forever — that idle
+        # repaint held the GIL and stole time from the audio/response threads.
+        if not (self._hovering or self._drag_over):
+            return
         self._dash_offset = (self._dash_offset + 0.8) % 20
         self._canvas.update()
 
@@ -1214,15 +1316,15 @@ class SetupOverlay(QWidget):
 
 class HueWheel(QWidget):
     """
-    Dairesel renk seçici. Kullanıcı tutamacı (küçük beyaz daire) çarkın
-    çevresinde sürükleyerek TÜM renk tonları arasından seçim yapar.
-    Merkezdeki dolu daire seçilen rengin canlı önizlemesidir.
+    Circular colour picker. The user drags the handle (small white circle)
+    around the wheel to choose from ALL hues. The filled circle in the centre
+    is a live preview of the selected colour.
     """
 
-    hue_picked    = pyqtSignal(str)   # sürükleme sırasında (canlı)
-    hue_committed = pyqtSignal(str)   # tutamaç bırakıldığında
+    hue_picked    = pyqtSignal(str)   # while dragging (live)
+    hue_committed = pyqtSignal(str)   # when the handle is released
 
-    _RING = 16   # halka kalınlığı (px)
+    _RING = 16   # ring thickness (px)
 
     def __init__(self, initial_hex: str = DEFAULT_UI_COLOR, parent=None):
         super().__init__(parent)
@@ -1242,7 +1344,7 @@ class HueWheel(QWidget):
             self._hue = c.hsvHueF()
             self.update()
 
-    # ── geometri yardımcıları ────────────────────────────────────────────────
+    # ── geometry helpers ─────────────────────────────────────────────────────
     def _ring_rect(self) -> QRectF:
         m = self._RING / 2 + 3
         return QRectF(self.rect()).adjusted(m, m, -m, -m)
@@ -1250,11 +1352,11 @@ class HueWheel(QWidget):
     def _hue_from_pos(self, pos: QPointF) -> float:
         c  = QRectF(self.rect()).center()
         dx = pos.x() - c.x()
-        dy = c.y() - pos.y()          # ekran y'si aşağı — matematiksel eksene çevir
-        ang = math.atan2(dy, dx)      # [-π, π], saat yönünün tersi
+        dy = c.y() - pos.y()          # screen y goes down — flip to math axis
+        ang = math.atan2(dy, dx)      # [-π, π], counter-clockwise
         return (ang / (2 * math.pi)) % 1.0
 
-    # ── çizim ────────────────────────────────────────────────────────────────
+    # ── drawing ──────────────────────────────────────────────────────────────
     def paintEvent(self, _):
         p = QPainter(self)
         if not p.isActive():
@@ -1270,14 +1372,14 @@ class HueWheel(QWidget):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawEllipse(rect)
 
-        # merkez önizleme dairesi
+        # centre preview circle
         preview = QColor.fromHsvF(self._hue, 1.0, 1.0)
         inner   = rect.adjusted(30, 30, -30, -30)
         p.setPen(QPen(qcol(C.BORDER_B), 1))
         p.setBrush(QBrush(preview))
         p.drawEllipse(inner)
 
-        # sürüklenen tutamaç
+        # draggable handle
         r   = rect.width() / 2
         ang = self._hue * 2 * math.pi
         hx  = center.x() + r * math.cos(ang)
@@ -1385,7 +1487,7 @@ class CustomizeOverlay(QWidget):
         lay.addLayout(voice_row)
         self._refresh_voice_btns()
 
-        # ── UI colour — renk çarkı ───────────────────────────────────────────
+        # ── UI colour — colour wheel ─────────────────────────────────────────
         lay.addSpacing(4)
         clr_hdr = QHBoxLayout()
         clr_hdr.addWidget(_lbl("UI COLOUR  —  drag the handle", 8,
@@ -1408,7 +1510,7 @@ class CustomizeOverlay(QWidget):
 
         self._initial_color = (ui_color or DEFAULT_UI_COLOR).strip().lower()
         self._sel_color     = self._initial_color
-        self.on_preview     = None   # callable(hex) — canlı önizleme; MainWindow bağlar
+        self.on_preview     = None   # callable(hex) — live preview; MainWindow wires it
 
         self._wheel = HueWheel(self._sel_color)
         wheel_row = QHBoxLayout()
@@ -1457,7 +1559,7 @@ class CustomizeOverlay(QWidget):
         btn_row.addWidget(cancel_btn)
         lay.addLayout(btn_row)
 
-    # ── ses seçimi ───────────────────────────────────────────────────────────
+    # ── voice selection ──────────────────────────────────────────────────────
     def _on_voice_pick(self, name: str):
         self._sel_voice = name
         self._refresh_voice_btns()
@@ -1479,9 +1581,9 @@ class CustomizeOverlay(QWidget):
                     QPushButton:hover {{ color: {C.TEXT}; border-color: {C.BORDER_B}; }}
                 """)
 
-    # ── renk akışı ───────────────────────────────────────────────────────────
+    # ── colour flow ──────────────────────────────────────────────────────────
     def _set_color(self, hx: str, update_wheel: bool = True, preview: bool = True):
-        """Seçili rengi günceller; hex kutusu + çark senkron kalır, tema canlı önizlenir."""
+        """Updates the selected colour; hex box + wheel stay in sync, theme is live-previewed."""
         self._sel_color = hx.strip().lower()
         self._hex_input.blockSignals(True)
         self._hex_input.setText(self._sel_color)
@@ -1492,14 +1594,14 @@ class CustomizeOverlay(QWidget):
             self.on_preview(self._sel_color)
 
     def _on_wheel_pick(self, hx: str):
-        # Sürükleme sırasında: hex kutusunu güncelle, temayı henüz uygulama
+        # While dragging: update the hex box, don't apply the theme yet
         self._sel_color = hx
         self._hex_input.blockSignals(True)
         self._hex_input.setText(hx)
         self._hex_input.blockSignals(False)
 
     def _on_wheel_commit(self, hx: str):
-        # Tutamaç bırakıldı → tüm arayüzü canlı önizle
+        # Handle released → live-preview the whole interface
         self._set_color(hx, update_wheel=False)
 
     def _on_hex_edited(self, text: str):
@@ -1512,7 +1614,7 @@ class CustomizeOverlay(QWidget):
             self._set_color(t, update_wheel=True, preview=True)
 
     def _cancel(self):
-        # Önizleme uygulandıysa açılıştaki renge geri dön
+        # If a preview was applied, revert to the colour from launch
         if self.on_preview and self._sel_color != self._initial_color:
             self.on_preview(self._initial_color)
         self.hide()
@@ -2148,6 +2250,262 @@ class ClipboardPanel(QWidget):
         self._dismiss_timer.start(8000)
 
 
+class PluginSettingsOverlay(QWidget):
+    """Floating overlay — renders per-plugin settings forms.
+
+    Fully generic: it iterates the settings schemas a plugin declared via its
+    PLUGIN_SETTINGS constant (delivered by PluginRegistry.settings_schemas) and
+    builds a form for each. It knows NOTHING about any specific plugin, so the
+    core stays clean and plugins remain pure drop-in — install a plugin that
+    declares fields (e.g. the 3D-printer suite) and its section appears here;
+    install none and this panel simply says there's nothing to configure.
+    """
+
+    _test_done = pyqtSignal(str, bool, str)   # namespace, ok, message
+    _OW = 460
+
+    def __init__(self, sections: list[dict], parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            PluginSettingsOverlay {{
+                background: rgba(0, 6, 10, 245);
+                border: 1px solid {C.BORDER_B};
+                border-radius: 6px;
+            }}
+        """)
+        self._sections = sections or []
+        self._widgets: dict[tuple, object] = {}    # (namespace, key) -> input widget
+        self._types:   dict[tuple, str]    = {}     # (namespace, key) -> field type
+        self._status_labels: dict[str, QLabel] = {} # namespace -> status QLabel
+        self._test_done.connect(self._on_test_done)
+
+        self._fs = (f"QLineEdit {{ background: #000d12; color: {C.TEXT}; "
+                    f"border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 8px; }}"
+                    f"QLineEdit:focus {{ border: 1px solid {C.PRI}; }}")
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(22, 16, 22, 16)
+        root.setSpacing(8)
+
+        root.addWidget(self._lbl("⚙  PLUGIN SETTINGS", 12, True))
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
+        root.addWidget(sep)
+
+        if not self._sections:
+            root.addWidget(self._lbl(
+                "No configurable plugins are installed.\nDrop a plugin that needs "
+                "settings (like the 3D-printer suite) into the plugins folder and "
+                "it will show up here.", 9, color=C.TEXT_DIM))
+        else:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setStyleSheet("QScrollArea { background: transparent; }")
+            inner = QWidget()
+            inner.setStyleSheet("background: transparent;")
+            form = QVBoxLayout(inner)
+            form.setContentsMargins(0, 0, 6, 0)
+            form.setSpacing(6)
+            for sec in self._sections:
+                self._build_section(form, sec)
+            form.addStretch(1)
+            scroll.setWidget(inner)
+            root.addWidget(scroll, 1)
+
+        # ── bottom buttons ───────────────────────────────────────────────────
+        btn_row = QHBoxLayout(); btn_row.setSpacing(8)
+        if self._sections:
+            save_btn = QPushButton("▸  SAVE")
+            save_btn.setFixedHeight(34)
+            save_btn.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+            save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            save_btn.setStyleSheet(f"""
+                QPushButton {{ background: transparent; color: {C.PRI};
+                    border: 1px solid {C.PRI_DIM}; border-radius: 3px; }}
+                QPushButton:hover {{ background: {C.PRI_GHO}; border: 1px solid {C.PRI}; }}
+            """)
+            save_btn.clicked.connect(self._save_all)
+            btn_row.addWidget(save_btn)
+
+        close_btn = QPushButton("CLOSE")
+        close_btn.setFixedHeight(34)
+        close_btn.setFont(QFont("Courier New", 9))
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {C.TEXT_MED};
+                border: 1px solid {C.BORDER}; border-radius: 3px; }}
+            QPushButton:hover {{ color: {C.TEXT}; border-color: {C.BORDER_B}; }}
+        """)
+        close_btn.clicked.connect(self.hide)
+        btn_row.addWidget(close_btn)
+        root.addLayout(btn_row)
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+    def _lbl(self, txt, fs=9, bold=False, color=C.PRI,
+             align=Qt.AlignmentFlag.AlignLeft):
+        w = QLabel(txt); w.setAlignment(align); w.setWordWrap(True)
+        w.setFont(QFont("Courier New", fs,
+                        QFont.Weight.Bold if bold else QFont.Weight.Normal))
+        w.setStyleSheet(f"color: {color}; background: transparent;")
+        return w
+
+    def _build_section(self, form: QVBoxLayout, sec: dict):
+        ns     = sec.get("namespace") or sec.get("plugin") or "plugin"
+        title  = sec.get("title") or ns
+        fields = sec.get("fields") or []
+        values = sec.get("values") or {}
+
+        form.addSpacing(4)
+        form.addWidget(self._lbl(title, 10, True, C.PRI))
+
+        for field in fields:
+            if not isinstance(field, dict) or not field.get("key"):
+                continue
+            key   = field["key"]
+            ftype = (field.get("type") or "text").lower()
+            label = field.get("label") or key
+            default = field.get("default")
+            stored  = values.get(key, default)
+
+            form.addWidget(self._lbl(label.upper(), 8, color=C.TEXT_DIM))
+
+            if ftype == "choice":
+                w = QComboBox()
+                w.addItems([str(o) for o in field.get("options", [])])
+                w.setFont(QFont("Courier New", 9))
+                w.setFixedHeight(30)
+                w.setStyleSheet(
+                    f"QComboBox {{ background: #000d12; color: {C.TEXT}; "
+                    f"border: 1px solid {C.BORDER}; border-radius: 3px; padding: 2px 8px; }}"
+                    f"QComboBox QAbstractItemView {{ background: #000d12; color: {C.TEXT}; "
+                    f"selection-background-color: {C.PRI_GHO}; }}")
+                if stored is not None:
+                    w.setCurrentText(str(stored))
+            elif ftype == "toggle":
+                w = QPushButton()
+                w.setCheckable(True)
+                w.setChecked(bool(stored))
+                w.setFixedHeight(28)
+                w.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+                w.setCursor(Qt.CursorShape.PointingHandCursor)
+                self._style_toggle(w)
+                w.toggled.connect(lambda _=False, b=w: self._style_toggle(b))
+            else:  # text / password
+                w = QLineEdit("" if stored is None else str(stored))
+                w.setFont(QFont("Courier New", 10))
+                w.setFixedHeight(30)
+                w.setStyleSheet(self._fs)
+                if field.get("placeholder"):
+                    w.setPlaceholderText(str(field["placeholder"]))
+                if ftype == "password":
+                    w.setEchoMode(QLineEdit.EchoMode.Password)
+
+            self._widgets[(ns, key)] = w
+            self._types[(ns, key)]   = ftype
+            form.addWidget(w)
+
+        # optional test/connect action button + status line
+        action = sec.get("action")
+        if isinstance(action, dict) and callable(action.get("run")):
+            form.addSpacing(2)
+            ab = QPushButton(str(action.get("label") or "TEST"))
+            ab.setFixedHeight(30)
+            ab.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            ab.setCursor(Qt.CursorShape.PointingHandCursor)
+            ab.setStyleSheet(f"""
+                QPushButton {{ background: #00091a; color: {C.PRI};
+                    border: 1px solid {C.PRI_DIM}; border-radius: 3px; }}
+                QPushButton:hover {{ background: {C.PRI_GHO}; border-color: {C.PRI}; }}
+            """)
+            ab.clicked.connect(lambda _=False, n=ns: self._run_action(n))
+            form.addWidget(ab)
+
+        status = self._lbl("", 8, color=C.TEXT_DIM)
+        self._status_labels[ns] = status
+        form.addWidget(status)
+
+        line = QFrame(); line.setFrameShape(QFrame.Shape.HLine)
+        line.setStyleSheet(f"color: {C.BORDER}; margin: 4px 0;")
+        form.addWidget(line)
+
+    def _style_toggle(self, btn: QPushButton):
+        on = btn.isChecked()
+        btn.setText("ON" if on else "OFF")
+        if on:
+            btn.setStyleSheet(f"QPushButton {{ background: {C.PRI_GHO}; color: {C.PRI}; "
+                              f"border: 1px solid {C.PRI}; border-radius: 3px; }}")
+        else:
+            btn.setStyleSheet(f"QPushButton {{ background: transparent; color: {C.TEXT_MED}; "
+                              f"border: 1px solid {C.BORDER}; border-radius: 3px; }}")
+
+    # ── data ──────────────────────────────────────────────────────────────────
+    def _gather(self, ns: str) -> dict:
+        out = {}
+        for (n, key), w in self._widgets.items():
+            if n != ns:
+                continue
+            t = self._types.get((n, key), "text")
+            if t == "choice":
+                out[key] = w.currentText()
+            elif t == "toggle":
+                out[key] = w.isChecked()
+            else:
+                out[key] = w.text().strip()
+        return out
+
+    def _save_ns(self, ns: str):
+        from memory.config_manager import save_plugin_config
+        save_plugin_config(ns, self._gather(ns))
+
+    def _save_all(self):
+        for sec in self._sections:
+            ns = sec.get("namespace") or sec.get("plugin")
+            if ns:
+                self._save_ns(ns)
+                lbl = self._status_labels.get(ns)
+                if lbl:
+                    lbl.setText("Saved ✓")
+                    lbl.setStyleSheet(f"color: {C.PRI}; background: transparent;")
+
+    def _run_action(self, ns: str):
+        sec = next((s for s in self._sections
+                    if (s.get("namespace") or s.get("plugin")) == ns), None)
+        if not sec:
+            return
+        run_fn = (sec.get("action") or {}).get("run")
+        if not callable(run_fn):
+            return
+        self._save_ns(ns)                 # persist what the user typed before testing
+        values = self._gather(ns)
+        lbl = self._status_labels.get(ns)
+        if lbl:
+            lbl.setText("Testing…")
+            lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+
+        def worker():
+            try:
+                res = run_fn(values)
+                if isinstance(res, tuple) and len(res) == 2:
+                    ok, msg = bool(res[0]), str(res[1])
+                else:
+                    ok, msg = bool(res), str(res)
+            except Exception as e:
+                ok, msg = False, str(e)
+            self._test_done.emit(ns, ok, msg)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_test_done(self, ns: str, ok: bool, msg: str):
+        lbl = self._status_labels.get(ns)
+        if not lbl:
+            return
+        lbl.setText(msg)
+        color = C.PRI if ok else "#ff6b6b"
+        lbl.setStyleSheet(f"color: {color}; background: transparent;")
+
+
 class RemoteKeyOverlay(QWidget):
     """Floating overlay — QR code for instant phone pairing + manual key fallback."""
 
@@ -2387,6 +2745,7 @@ class MainWindow(QMainWindow):
     _clipboard_sig  = pyqtSignal(str)        # clipboard text changed (thread-safe)
     _confirm_sig    = pyqtSignal(str, str)   # (title, detail) — irreversible-action gate
     _confirm_hide_sig = pyqtSignal()
+    _wake_dl_sig    = pyqtSignal(bool, str)  # wake-word install finished (ok, message)
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -2397,12 +2756,12 @@ class MainWindow(QMainWindow):
         self._assistant_name: str = (_cfg.get("assistant_name") or "JARVIS").strip()
         _display = self._assistant_name.upper()
 
-        # Kayıtlı UI rengini panel/stylesheet'ler kurulmadan ÖNCE uygula
+        # Apply the saved UI colour BEFORE panels/stylesheets are built
         _ui_color = (_cfg.get("ui_color") or "").strip()
         if _ui_color and _ui_color.lower() != DEFAULT_UI_COLOR:
             apply_ui_accent(_ui_color)
 
-        self.setWindowTitle(f"{_display} — MARK LII")
+        self.setWindowTitle(f"{_display} — {APP_VERSION}")
         self.setMinimumSize(_MIN_W, _MIN_H)
         self.resize(_DEFAULT_W, _DEFAULT_H)
 
@@ -2419,6 +2778,10 @@ class MainWindow(QMainWindow):
         self.on_audio_device_change = None  # callable: () -> None — reopen audio streams
         self._confirm_overlay  = None   # live ConfirmBanner, if one is on screen
         self.get_plugins       = None   # callable: () -> list[dict], set by JarvisLive
+        self.get_plugin_settings = None # callable: () -> list[dict] settings schemas, set by JarvisLive
+        self.on_wake_toggle    = None   # callable: (enable: bool) -> str, set by JarvisLive
+        self.on_wake_manual    = None   # callable: () -> None — manual sleep/wake
+        self.wake_get_state    = None   # callable: () -> dict {enabled, awake, ready}
         self._muted            = False
         self._current_file: str | None = None
         self._remote_overlay: RemoteKeyOverlay | None = None
@@ -2518,7 +2881,7 @@ class MainWindow(QMainWindow):
         self._clock_tmr.start(1000)
         self._tick_clock()
 
-        # Metrik güncelleme timer'ı
+        # Metric update timer
         self._metric_tmr = QTimer(self)
         self._metric_tmr.timeout.connect(self._update_metrics)
         self._metric_tmr.start(2000)
@@ -2534,6 +2897,7 @@ class MainWindow(QMainWindow):
         self._cam_stream_sig.connect(self._on_cam_stream)
         self._cam_frame_sig.connect(self._on_cam_frame)
         self._clipboard_sig.connect(self._show_clipboard_panel)
+        self._wake_dl_sig.connect(self._on_wake_install_done)
         self._cam_stop = threading.Event()
 
         # Camera preview overlay (child of central widget, positioned in resizeEvent)
@@ -3085,7 +3449,7 @@ class MainWindow(QMainWindow):
             l.setStyleSheet(f"color: {color}; background: transparent;")
             return l
 
-        lay.addWidget(_badge("MARK LII", C.PRI_DIM))
+        lay.addWidget(_badge(APP_VERSION, C.PRI_DIM))
         lay.addSpacing(8)
         self._drawer_btn = QPushButton("⚙")
         self._drawer_btn.setFixedSize(26, 26)
@@ -3200,7 +3564,7 @@ class MainWindow(QMainWindow):
         for txt, col in [
             ("AI CORE\nACTIVE",  C.GREEN),
             ("SEC\nCLEARED",     C.PRI),
-            ("PROTOCOL\nXLIX",   C.TEXT_DIM),
+            ("PROTOCOL\n" + APP_PROTOCOL,   C.TEXT_DIM),
         ]:
             lbl = QLabel(txt)
             lbl.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
@@ -3368,6 +3732,26 @@ class MainWindow(QMainWindow):
         self._brief_btn.clicked.connect(self._toggle_brief)
         lay.addWidget(self._brief_btn)
 
+        # ── Wake word ──────────────────────────────────────────────────────────
+        self._wake_btn = QPushButton()
+        self._wake_btn.setFixedHeight(26)
+        self._wake_btn.setFont(QFont("Courier New", 7))
+        self._wake_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._wake_btn.clicked.connect(self._toggle_wake_word)
+        lay.addWidget(self._wake_btn)
+
+        self._wake_sleep_btn = QPushButton()
+        self._wake_sleep_btn.setFixedHeight(26)
+        self._wake_sleep_btn.setFont(QFont("Courier New", 7))
+        self._wake_sleep_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._wake_sleep_btn.clicked.connect(self._tap_wake_manual)
+        lay.addWidget(self._wake_sleep_btn)
+        # Neutral placeholder now; the real state (which may load the model to
+        # check readiness) is resolved lazily the first time the drawer opens.
+        self._wake_btn.setText("🎙  WAKE WORD")
+        self._wake_btn.setStyleSheet(_BTN_STYLE_DIM)
+        self._wake_sleep_btn.hide()
+
         audio_btn = QPushButton("🎧  AUDIO DEVICES")
         audio_btn.setFixedHeight(26)
         audio_btn.setFont(QFont("Courier New", 7))
@@ -3392,11 +3776,20 @@ class MainWindow(QMainWindow):
         plugin_btn.clicked.connect(self._open_plugin_manager)
         lay.addWidget(plugin_btn)
 
+        settings_btn = QPushButton("⚙  PLUGIN SETTINGS")
+        settings_btn.setFixedHeight(26)
+        settings_btn.setFont(QFont("Courier New", 7))
+        settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        settings_btn.setStyleSheet(_BTN_STYLE_DIM)
+        settings_btn.clicked.connect(self._open_plugin_settings)
+        lay.addWidget(settings_btn)
+
         w.adjustSize()
         return w
 
     def _toggle_drawer(self, checked: bool):
         if checked:
+            self._refresh_wake_btns()   # resolve wake state on open (lazy)
             self._position_quick_drawer()
             self._quick_drawer.show()
             self._quick_drawer.raise_()
@@ -3722,6 +4115,101 @@ class MainWindow(QMainWindow):
         save_brief_enabled(new_val)
         self._update_brief_btn(new_val)
 
+    # ── Wake word settings ───────────────────────────────────────────────────
+
+    def _wake_state(self) -> dict:
+        """Combined state for the two wake-word buttons. Readiness is a cheap,
+        deterministic on-disk check now (see core.wake_word.is_ready), so there
+        is nothing to cache — the button never flickers to a stale value."""
+        if self.wake_get_state:
+            try:
+                s = self.wake_get_state()
+                return {"ready": bool(s.get("ready")),
+                        "enabled": bool(s.get("enabled")),
+                        "awake": bool(s.get("awake"))}
+            except Exception:
+                pass
+        # Before JarvisLive has wired its callback (drawer built at startup).
+        ready, enabled = False, False
+        try:
+            from core.wake_word import is_ready
+            from memory.config_manager import get_wake_word_enabled
+            ready, enabled = is_ready(), get_wake_word_enabled()
+        except Exception:
+            pass
+        return {"ready": ready, "enabled": enabled, "awake": True}
+
+    def _refresh_wake_btns(self):
+        if not hasattr(self, '_wake_btn'):
+            return
+        st = self._wake_state()
+        _on = f"""
+            QPushButton {{ background: #001a08; color: {C.GREEN};
+                border: 1px solid {C.GREEN_D}; border-radius: 3px;
+                text-align: left; padding: 0 8px; }}
+            QPushButton:hover {{ background: #002010; }}"""
+        _off = f"""
+            QPushButton {{ background: transparent; color: {C.TEXT_DIM};
+                border: 1px solid {C.BORDER}; border-radius: 3px;
+                text-align: left; padding: 0 8px; }}
+            QPushButton:hover {{ color: {C.TEXT}; border: 1px solid {C.BORDER_B}; }}"""
+        self._wake_btn.setEnabled(True)
+        if not st["ready"]:
+            self._wake_btn.setText("⬇  WAKE WORD: DOWNLOAD")
+            self._wake_btn.setStyleSheet(_off)
+            self._wake_sleep_btn.hide()
+        elif st["enabled"]:
+            self._wake_btn.setText("🎙  WAKE WORD: ON")
+            self._wake_btn.setStyleSheet(_on)
+            self._wake_sleep_btn.show()
+            self._wake_sleep_btn.setText("😴  SLEEP NOW" if st["awake"] else "👂  WAKE NOW")
+            self._wake_sleep_btn.setStyleSheet(_off)
+        else:
+            self._wake_btn.setText("🎙  WAKE WORD: OFF")
+            self._wake_btn.setStyleSheet(_off)
+            self._wake_sleep_btn.hide()
+
+    def _toggle_wake_word(self):
+        st = self._wake_state()
+        if not st["ready"]:
+            # First time: download openwakeword + model in a worker thread.
+            self._wake_btn.setText("⬇  DOWNLOADING… (one-time)")
+            self._wake_btn.setEnabled(False)
+            def _work():
+                try:
+                    from core.wake_word import install_and_download
+                    ok, msg = install_and_download(
+                        logger=lambda m: self._log_sig.emit(f"SYS: {m}"))
+                except Exception as e:
+                    ok, msg = False, str(e)
+                if ok and self.on_wake_toggle:
+                    try:
+                        self.on_wake_toggle(True)   # auto-enable after a successful download
+                    except Exception:
+                        pass
+                self._wake_dl_sig.emit(ok, msg)
+            threading.Thread(target=_work, daemon=True).start()
+            return
+        # Already downloaded → just flip enabled/disabled through JarvisLive.
+        if self.on_wake_toggle:
+            try:
+                self.on_wake_toggle(not st["enabled"])
+            except Exception:
+                pass
+        self._refresh_wake_btns()
+
+    def _on_wake_install_done(self, ok: bool, msg: str):
+        self._log_sig.emit(f"SYS: {'Wake word ready.' if ok else 'Wake word setup failed: ' + msg}")
+        self._refresh_wake_btns()
+
+    def _tap_wake_manual(self):
+        if self.on_wake_manual:
+            try:
+                self.on_wake_manual()
+            except Exception:
+                pass
+        self._refresh_wake_btns()
+
     def _update_brief_btn(self, enabled: bool):
         if not hasattr(self, '_brief_btn'):
             return
@@ -3773,7 +4261,7 @@ class MainWindow(QMainWindow):
         self._customize_overlay = ov
 
     def _preview_ui_color(self, hex_color: str):
-        """Canlı önizleme — tüm arayüzü yeni renge boyar (config'e YAZMAZ)."""
+        """Live preview — paints the whole interface the new colour (does NOT write to config)."""
         old = current_palette()
         if apply_ui_accent(hex_color):
             retheme_all_widgets(old, current_palette())
@@ -3783,7 +4271,7 @@ class MainWindow(QMainWindow):
         """Update all name/theme-dependent UI elements and persist to config."""
         self._assistant_name = name.strip() or "JARVIS"
         display = self._assistant_name.upper()
-        self.setWindowTitle(f"{display} — MARK LII")
+        self.setWindowTitle(f"{display} — {APP_VERSION}")
         self._title_lbl.setText(display)
         if display in ("JARVIS", "J.A.R.V.I.S"):
             self._sub_lbl.setText("Just A Rather Very Intelligent System")
@@ -3796,7 +4284,7 @@ class MainWindow(QMainWindow):
         if ui_color:
             old = current_palette()
             if apply_ui_accent(ui_color):
-                # Tüm arayüzü (paneller, butonlar, kenarlıklar, HUD) canlı boya
+                # Live-paint the whole interface (panels, buttons, borders, HUD)
                 retheme_all_widgets(old, current_palette())
                 color_changed = old["PRI"] != C.PRI
 
@@ -3899,6 +4387,21 @@ class MainWindow(QMainWindow):
         ov.show()
         ov.raise_()
         self._plugin_manager_overlay = ov   # keep a reference so it isn't GC'd
+
+    def _open_plugin_settings(self):
+        sections = self.get_plugin_settings() if self.get_plugin_settings else []
+        cw = self.centralWidget()
+        ov = PluginSettingsOverlay(sections, parent=cw)
+        ow = PluginSettingsOverlay._OW
+        oh = min(560, cw.height() - 16)
+        ov.setGeometry(
+            (cw.width()  - ow) // 2,
+            (cw.height() - oh) // 2,
+            ow, oh,
+        )
+        ov.show()
+        ov.raise_()
+        self._plugin_settings_overlay = ov   # keep a reference so it isn't GC'd
 
     # ── Clipboard intelligence ───────────────────────────────────────────────────
 
@@ -4010,6 +4513,7 @@ class MainWindow(QMainWindow):
         self._assistant_name = _read_full_config().get("assistant_name", "JARVIS") or "JARVIS"
         self._log.append_log(f"SYS: Initialised. OS={os_name.upper()}. {self._assistant_name} online.")
 
+
 class _RootShim:
     def __init__(self, app: QApplication):
         self._app = app
@@ -4024,8 +4528,8 @@ class JarvisUI:
         self._app = QApplication.instance() or QApplication(sys.argv)
         self._app.setStyle("Fusion")
         self._win = MainWindow(face_path)
-        self._win.show()
         self.root = _RootShim(self._app)
+        self._win.show()
 
     @property
     def muted(self) -> bool:
@@ -4096,6 +4600,38 @@ class JarvisUI:
     @get_plugins.setter
     def get_plugins(self, cb):
         self._win.get_plugins = cb
+
+    @property
+    def get_plugin_settings(self):
+        return self._win.get_plugin_settings
+
+    @get_plugin_settings.setter
+    def get_plugin_settings(self, cb):
+        self._win.get_plugin_settings = cb
+
+    @property
+    def on_wake_toggle(self):
+        return self._win.on_wake_toggle
+
+    @on_wake_toggle.setter
+    def on_wake_toggle(self, cb):
+        self._win.on_wake_toggle = cb
+
+    @property
+    def on_wake_manual(self):
+        return self._win.on_wake_manual
+
+    @on_wake_manual.setter
+    def on_wake_manual(self, cb):
+        self._win.on_wake_manual = cb
+
+    @property
+    def wake_get_state(self):
+        return self._win.wake_get_state
+
+    @wake_get_state.setter
+    def wake_get_state(self, cb):
+        self._win.wake_get_state = cb
 
     def set_audio_level(self, level: float) -> None:
         """Thread-safe: feed a 0.0–1.0 live audio level to the HUD waveform.

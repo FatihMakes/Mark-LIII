@@ -1,67 +1,7 @@
 #web_search.py
 import json
 import sys
-import threading
-import time
 from pathlib import Path
-
-# ── Gemini grounding quota circuit breaker ────────────────────────────────────
-# The google_search grounding tool has its own small quota, separate from plain
-# generation.  Once it is spent every call returns 429 — so retrying it at the
-# top of every search only adds a dead round-trip before the DDG fallback runs.
-# After a quota error, skip Gemini entirely for a cooldown period.
-_QUOTA_COOLDOWN_SEC  = 900          # 15 minutes
-_quota_blocked_until = 0.0
-_quota_lock          = threading.Lock()
-
-
-def _gemini_available() -> bool:
-    with _quota_lock:
-        return time.monotonic() >= _quota_blocked_until
-
-
-def _note_gemini_error(exc: Exception) -> None:
-    """Trip the breaker when the error is a quota / rate-limit rejection."""
-    global _quota_blocked_until
-    msg = str(exc)
-    if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
-        with _quota_lock:
-            already = time.monotonic() < _quota_blocked_until
-            _quota_blocked_until = time.monotonic() + _QUOTA_COOLDOWN_SEC
-        if not already:
-            print(
-                "[WebSearch] Gemini grounding quota exhausted — skipping it for "
-                f"{_QUOTA_COOLDOWN_SEC // 60} min and serving results from DDG."
-            )
-
-
-class _QuotaCooldown(RuntimeError):
-    """Raised instead of calling Gemini while the quota breaker is open."""
-
-
-def _log_gemini_failure(context: str, exc: Exception) -> None:
-    """Log a Gemini failure — silently when it is just the expected cooldown."""
-    if isinstance(exc, _QuotaCooldown):
-        return          # announced once when the breaker tripped; not a warning
-    print(f"[WebSearch] \u26a0\ufe0f {context} failed ({exc}) — using DDG instead")
-
-
-def _run_bounded(fn, timeout: float, label: str = "task"):
-    """Run fn() in a daemon thread; return its result, or None if it overruns."""
-    box = [None]
-
-    def _run():
-        try:
-            box[0] = fn()
-        except Exception as e:
-            _log_gemini_failure(label, e)
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    t.join(timeout)
-    if t.is_alive():
-        print(f"[WebSearch] {label} exceeded {timeout:.0f}s — moving on")
-    return box[0]
 
 def _get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -79,21 +19,14 @@ def _get_api_key() -> str:
 
 
 def _gemini_search(query: str) -> str:
-    if not _gemini_available():
-        raise _QuotaCooldown("Gemini grounding is in quota cooldown")
-
     from google import genai
 
-    client = genai.Client(api_key=_get_api_key())
-    try:
-        response = client.models.generate_content(
-            model="gemini-flash-latest",
-            contents=query,
-            config={"tools": [{"google_search": {}}]},
-        )
-    except Exception as e:
-        _note_gemini_error(e)
-        raise
+    client   = genai.Client(api_key=_get_api_key())
+    response = client.models.generate_content(
+        model="gemini-flash-latest",
+        contents=query,
+        config={"tools": [{"google_search": {}}]},
+    )
 
     text = ""
     for part in response.candidates[0].content.parts:
@@ -106,45 +39,30 @@ def _gemini_search(query: str) -> str:
     return text
 
 
-def _get_ddgs():
-    """
-    Returns the DDGS class.  The package was renamed duckduckgo-search -> ddgs;
-    the legacy package's endpoints are now rejected by DuckDuckGo (news() gets a
-    403 Ratelimit, text() silently returns zero results), so warn loudly if we
-    end up on it instead of failing in silence.
-    """
+def _ddg_search(query: str, max_results: int = 6) -> list[dict]:
     try:
         from ddgs import DDGS
-        return DDGS
     except ImportError:
         from duckduckgo_search import DDGS
-        print(
-            "[WebSearch] ⚠️ Using the deprecated 'duckduckgo-search' package — "
-            "DuckDuckGo blocks its endpoints, so every search will come back "
-            "empty.  Fix with:  pip install -U ddgs"
-        )
-        return DDGS
 
-
-def _ddg_search(query: str, max_results: int = 6) -> list[dict]:
-    DDGS = _get_ddgs()
     results = []
-    try:
-        with DDGS() as ddgs:
-            for r in ddgs.text(query, max_results=max_results):
-                results.append({
-                    "title":   r.get("title",  ""),
-                    "snippet": r.get("body",   ""),
-                    "url":     r.get("href",   ""),
-                })
-    except Exception as e:
-        print(f"[WebSearch] ⚠️ DDG text() failed: {e}")
+    with DDGS() as ddgs:
+        for r in ddgs.text(query, max_results=max_results):
+            results.append({
+                "title":   r.get("title",  ""),
+                "snippet": r.get("body",   ""),
+                "url":     r.get("href",   ""),
+            })
     return results
 
 
 def _ddg_news(query: str, max_results: int = 8) -> list[dict]:
     """DDG news search — returns actual articles, not website homepages."""
-    DDGS = _get_ddgs()
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        from duckduckgo_search import DDGS
+
     results = []
     try:
         with DDGS() as ddgs:
@@ -157,9 +75,6 @@ def _ddg_news(query: str, max_results: int = 8) -> list[dict]:
                 })
     except Exception as e:
         print(f"[WebSearch] ⚠️ DDG news() failed ({e}) — falling back to text search")
-    # Also covers the legacy-package case, where news() returns an empty list
-    # instead of raising.
-    if not results:
         results = _ddg_search(query, max_results=max_results)
     return results
 
@@ -242,43 +157,58 @@ def _search(query: str) -> str:
     try:
         return _gemini_search(query)
     except Exception as e:
-        _log_gemini_failure("Gemini search", e)
+        print(f"[WebSearch] ⚠️ Gemini failed ({e}) — trying DDG...")
         results = _ddg_search(query)
         return _format_ddg(query, results)
 
 
 def _news(query: str) -> str:
     """
-    DDG first, Gemini as backup.
-
-    The old version raced both backends in parallel and kept the first answer.
-    That burned one google_search grounding call on *every* news request —
-    including the startup briefing — even when DDG had already won the race.
-    Grounding has a small quota, so it ran dry after a handful of launches and
-    then 429'd for everything else (research/compare), which are the modes that
-    actually need a synthesised answer.
-
-    DDG news returns in well under a second and gives raw headlines, which is
-    exactly what the briefing wants, so it goes first and Gemini is only touched
-    when DDG comes back empty.
+    Runs Gemini grounded search AND DDG news in parallel.
+    Returns whichever delivers a valid result first; cancels the other.
     """
+    import threading
+
     gemini_query = f"latest news today: {query}" if query else "top world news today"
     ddg_query    = query if query else "world news today"
 
-    def _ddg_attempt() -> str:
-        return _format_news(ddg_query, _ddg_news(ddg_query, max_results=8))
+    result_box  = [None]   # first valid result lands here
+    lock        = threading.Lock()
+    done_evt    = threading.Event()
+    failures    = [0]
 
-    text = _run_bounded(_ddg_attempt, timeout=5.0, label="DDG news")
-    if text and len(text) > 60 and not text.startswith("No news found"):
-        return text
+    def _store(r: str) -> None:
+        if r and len(r) > 60:
+            with lock:
+                if result_box[0] is None:
+                    result_box[0] = r
+            done_evt.set()
+        else:
+            with lock:
+                failures[0] += 1
+                if failures[0] >= 2:   # both failed — unblock caller
+                    done_evt.set()
 
-    text = _run_bounded(
-        lambda: _gemini_search(gemini_query), timeout=6.0, label="Gemini news"
-    )
-    if text and len(text) > 60:
-        return text
+    def _try_gemini():
+        try:
+            _store(_gemini_search(gemini_query))
+        except Exception as e:
+            print(f"[WebSearch] ⚠️ Gemini news failed ({e})")
+            _store("")
 
-    return f"No news found for: {query}"
+    def _try_ddg():
+        try:
+            results = _ddg_news(ddg_query, max_results=8)
+            _store(_format_news(ddg_query, results))
+        except Exception as e:
+            print(f"[WebSearch] ⚠️ DDG news failed ({e})")
+            _store("")
+
+    threading.Thread(target=_try_gemini, daemon=True).start()
+    threading.Thread(target=_try_ddg,    daemon=True).start()
+
+    done_evt.wait(timeout=10.0)
+    return result_box[0] or f"No news found for: {query}"
 
 
 def _research(query: str) -> str:
@@ -293,7 +223,7 @@ def _research(query: str) -> str:
     try:
         return _gemini_search(research_query)
     except Exception as e:
-        _log_gemini_failure("Gemini research", e)
+        print(f"[WebSearch] ⚠️ Research Gemini failed ({e}) — DDG fallback...")
         results = _ddg_search(query, max_results=10)
         return _format_ddg(query, results)
 
@@ -304,7 +234,7 @@ def _price(query: str) -> str:
     try:
         return _gemini_search(price_query)
     except Exception as e:
-        _log_gemini_failure("Gemini price", e)
+        print(f"[WebSearch] ⚠️ Price Gemini failed ({e}) — DDG fallback...")
         results = _ddg_search(f"{query} price buy", max_results=6)
         return _format_ddg(query, results)
 
@@ -317,7 +247,7 @@ def _compare(items: list[str], aspect: str) -> str:
     try:
         return _gemini_search(query)
     except Exception as e:
-        _log_gemini_failure("Gemini compare", e)
+        print(f"[WebSearch] ⚠️ Gemini compare failed: {e} — falling back to DDG")
 
     all_results: dict[str, list] = {}
     for item in items:
@@ -376,3 +306,38 @@ def web_search(
     except Exception as e:
         print(f"[WebSearch] ❌ All backends failed: {e}")
         return f"Search failed: {e}"
+
+
+# ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
+TOOL = {
+    "name": "web_search",
+    "description": "Searches the web. Use for ANY question about current facts, events, prices, or topics — always prefer this over guessing. Modes: 'search' (default), 'news' (latest headlines on a topic), 'research' (deep comprehensive answer), 'price' (product cost lookup), 'compare' (side-by-side comparison of items).",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "query": {
+                "type": "STRING",
+                "description": "Search query or topic"
+            },
+            "mode": {
+                "type": "STRING",
+                "description": "search | news | research | price | compare"
+            },
+            "items": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "STRING"
+                },
+                "description": "Items to compare (compare mode)"
+            },
+            "aspect": {
+                "type": "STRING",
+                "description": "Comparison aspect: price | specs | reviews | features"
+            }
+        },
+        "required": [
+            "query"
+        ]
+    },
+    "handler": web_search,
+}

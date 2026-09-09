@@ -104,6 +104,23 @@ def save_voice(voice_name: str) -> None:
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
 
 
+def get_wake_word_enabled() -> bool:
+    """Whether local wake-word gating is on (assistant sleeps until 'Hey Jarvis')."""
+    return load_api_keys().get("wake_word_enabled", False)
+
+
+def save_wake_word_enabled(enabled: bool) -> None:
+    ensure_config_dir()
+    data: dict = {}
+    if CONFIG_FILE.exists():
+        try:
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    data["wake_word_enabled"] = bool(enabled)
+    CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+
+
 def get_brief_enabled() -> bool:
     return load_api_keys().get("morning_brief_enabled", True)
 
@@ -165,6 +182,46 @@ def save_output_device(name: str) -> None:
 def get_plugin_enabled(plugin_name: str) -> bool:
     """Plugins are enabled by default the moment they're discovered (opt-out model)."""
     return load_api_keys().get("plugins_enabled", {}).get(plugin_name, True)
+
+
+# ── Per-plugin settings ("tokens" / connection details) ───────────────────────
+# Generic store so a plugin can declare its own config fields (PLUGIN_SETTINGS)
+# and the settings UI renders + persists them WITHOUT any core edit — keeping the
+# drop-in model intact. Values live under plugin_config[<namespace>][<key>].
+# A namespace defaults to the plugin name, but a suite of plugins (e.g. the
+# printer control/watchdog/autoeject trio) can share ONE namespace.
+def get_plugin_config(namespace: str) -> dict:
+    """All stored values for a namespace (empty dict if none set yet)."""
+    cfg = load_api_keys().get("plugin_config")
+    val = cfg.get(namespace) if isinstance(cfg, dict) else None
+    return dict(val) if isinstance(val, dict) else {}
+
+
+def get_plugin_setting(namespace: str, key: str, default=None):
+    """A single value from a namespace, or `default` if unset."""
+    return get_plugin_config(namespace).get(key, default)
+
+
+def save_plugin_config(namespace: str, values: dict) -> None:
+    """Merge `values` into a namespace's stored config (read-modify-write, like
+    every other helper here). Only the provided keys are touched."""
+    ensure_config_dir()
+    data: dict = {}
+    if CONFIG_FILE.exists():
+        try:
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    pc = data.get("plugin_config")
+    if not isinstance(pc, dict):
+        pc = {}
+    cur = pc.get(namespace)
+    if not isinstance(cur, dict):
+        cur = {}
+    cur.update(values)
+    pc[namespace] = cur
+    data["plugin_config"] = pc
+    CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
 
 
 def save_plugin_enabled(plugin_name: str, enabled: bool) -> None:

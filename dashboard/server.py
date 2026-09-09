@@ -360,93 +360,6 @@ def _local_ip() -> str:
     return "127.0.0.1"
 
 
-def _ensure_certs() -> bool:
-    """
-    Make sure config/certs holds a TLS key pair, generating a self-signed one the
-    first time the dashboard runs.
-
-    The pair is deliberately NOT shipped in the repository. A private key that
-    every user downloads is the same as having no private key at all: anyone can
-    present a certificate that matches it. Generating locally gives each install
-    its own key, costs about a second, and happens exactly once.
-
-    Returns True when a usable pair exists afterwards; False leaves the caller on
-    plain HTTP, which still works — the QR code simply encodes http:// instead.
-    """
-    certs = BASE_DIR / "config" / "certs"
-    key_p = certs / "jarvis.key"
-    crt_p = certs / "jarvis.crt"
-    if key_p.exists() and crt_p.exists():
-        return True
-
-    try:
-        import datetime
-        import ipaddress
-        from cryptography import x509
-        from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import rsa
-        from cryptography.x509.oid import NameOID
-    except ImportError:
-        print("[Dashboard] cryptography not installed — serving over plain HTTP.")
-        print("[Dashboard] For HTTPS run:  pip install cryptography")
-        return False
-
-    try:
-        certs.mkdir(parents=True, exist_ok=True)
-        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
-        who = x509.Name([
-            x509.NameAttribute(NameOID.COMMON_NAME, "JARVIS Dashboard"),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "JARVIS"),
-        ])
-
-        # The SAN has to cover every address the phone might use: the LAN IP the
-        # QR code encodes, plus localhost when testing on the machine itself.
-        alt = [x509.DNSName("localhost"),
-               x509.IPAddress(ipaddress.IPv4Address("127.0.0.1"))]
-        try:
-            lan = _local_ip()
-            if not lan.startswith("127."):
-                alt.append(x509.IPAddress(ipaddress.IPv4Address(lan)))
-        except Exception:
-            pass          # no LAN address resolvable — localhost entries still work
-
-        # Timezone-aware UTC: datetime.utcnow() is deprecated from Python 3.12 on,
-        # and the builder normalises aware values to UTC itself.
-        now = datetime.datetime.now(datetime.timezone.utc)
-        cert = (
-            x509.CertificateBuilder()
-            .subject_name(who)
-            .issuer_name(who)
-            .public_key(key.public_key())
-            .serial_number(x509.random_serial_number())
-            .not_valid_before(now - datetime.timedelta(days=1))
-            .not_valid_after(now + datetime.timedelta(days=3650))
-            .add_extension(x509.SubjectAlternativeName(alt), critical=False)
-            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
-            .sign(key, hashes.SHA256())
-        )
-
-        key_p.write_bytes(key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.TraditionalOpenSSL,
-            encryption_algorithm=serialization.NoEncryption(),
-        ))
-        crt_p.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-
-        try:
-            import os as _os
-            _os.chmod(key_p, 0o600)   # best effort — largely a no-op on Windows
-        except Exception:
-            pass
-
-        print(f"[Dashboard] Generated a self-signed certificate for this machine: {certs}")
-        return True
-    except Exception as e:
-        print(f"[Dashboard] Certificate generation failed ({e}) — serving over plain HTTP.")
-        return False
-
-
 def _read(name: str) -> str:
     return (STATIC_DIR / name).read_text(encoding="utf-8")
 
@@ -862,9 +775,6 @@ class DashboardServer:
         # Firewall setup runs in a thread — uvicorn starts immediately,
         # no waiting for UAC dialogs or subprocess timeouts.
         asyncio.get_event_loop().run_in_executor(None, _ensure_network_access, PORT)
-
-        # Generate the TLS pair on first run so no private key ships in the repo.
-        _ensure_certs()
 
         use_ssl  = self._ssl_enabled()
         ssl_key  = BASE_DIR / "config" / "certs" / "jarvis.key"

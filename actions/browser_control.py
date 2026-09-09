@@ -369,12 +369,12 @@ _WIN_EXE_HINTS: dict[str, str] = {"chrome": "chrome", "edge": "msedge"}
 
 def _open_native(url: str, browser_name: Optional[str]) -> str:
     """
-    Kullanıcının GERÇEK tarayıcısını normal şekilde açar — kendi profili,
-    giriş yapılmış hesapları ve eklentileriyle. Otomasyon bağlanmaz, bu yüzden
-    about:blank sekmesi veya boş profil ASLA görünmez.
-    url boş ise tarayıcı URL'siz başlatılır (kendi açılış sayfası /
-    oturum geri yükleme ile) — tıpkı kullanıcının kendisi açmış gibi.
-    Windows / macOS / Linux üçünde de çalışır.
+    Opens the user's REAL browser normally — with their own profile,
+    logged-in accounts and extensions. No automation attaches, so an
+    about:blank tab or a blank profile NEVER shows up.
+    If url is empty the browser starts with no URL (its own start page /
+    session restore) — exactly as if the user had opened it themselves.
+    Works on all three of Windows / macOS / Linux.
     """
     url = _normalize_url(url) if url and url.strip() else ""
     if url == "about:blank":
@@ -384,7 +384,7 @@ def _open_native(url: str, browser_name: Optional[str]) -> str:
     if browser_name:
         name = _ALIASES.get(browser_name.lower().strip(), browser_name.lower().strip())
     elif not url:
-        # URL yok → sadece pencere açılacak; varsayılan tarayıcının exe'si gerekir
+        # No URL → only a window will open; needs the default browser's exe
         name = _detect_default_browser()
 
     # Specific browser → launch its own executable, exactly like the user would.
@@ -443,8 +443,8 @@ def _open_native(url: str, browser_name: Optional[str]) -> str:
 
 class _BrowserSession:
     """
-    Bir tarayıcı örneği için tam oturum.
-    Tüm tarayıcılar launch_persistent_context ile gerçek profil üzerinde açılır.
+    A full session for one browser instance.
+    All browsers open on the real profile via launch_persistent_context.
     """
 
     def __init__(self, browser_name: str):
@@ -505,9 +505,9 @@ class _BrowserSession:
 
     async def _adopt_page(self) -> Page:
         """
-        launch_persistent_context zaten bir başlangıç sekmesi açar.
-        Yeni bir boş sekme (about:blank) açmak yerine o sekmeyi devralır —
-        böylece kullanıcı fazladan boş sekme görmez.
+        launch_persistent_context already opens a starting tab.
+        Instead of opening a new blank tab (about:blank), it adopts that tab —
+        so the user never sees an extra blank tab.
         """
         await asyncio.sleep(0.3)
         pages = self._context.pages
@@ -515,8 +515,8 @@ class _BrowserSession:
 
     async def _launch(self):
         """
-        Tarayıcıyı gerçek kullanıcı profiliyle başlatır.
-        Context zaten açıksa hiçbir şey yapmaz.
+        Launches the browser with the real user profile.
+        Does nothing if the context is already open.
         """
         if self._context is not None:
             return
@@ -607,10 +607,10 @@ class _BrowserSession:
         except Exception as e:
             print(f"[Browser] ⚠️  Real profile failed for {label}: {e}")
 
-        # Gerçek profil açılamadı (tarayıcı zaten açık / kilitli profil / yeni
-        # Chrome sürümleri otomasyonla gerçek profili engelliyor). Kalıcı
-        # JARVIS otomasyon profiline geçilir — buraya bir kez giriş yapılan
-        # hesaplar sonraki oturumlarda da açık kalır.
+        # The real profile could not be opened (browser already open / locked
+        # profile / newer Chrome versions block the real profile under
+        # automation). Fall back to a persistent JARVIS automation profile —
+        # accounts logged in here once stay logged in on later sessions too.
         jarvis_profile = str(Path.home() / ".jarvis_profiles" / self.browser_name)
         Path(jarvis_profile).mkdir(parents=True, exist_ok=True)
         print(f"[Browser] Retrying with JARVIS profile: {jarvis_profile}")
@@ -840,7 +840,7 @@ class _BrowserSession:
         return f"{self.browser_name} closed."
 
 class _SessionRegistry:
-    """Tüm aktif tarayıcı oturumlarını yönetir."""
+    """Manages all active browser sessions."""
 
     def __init__(self):
         self._sessions:        dict[str, _BrowserSession] = {}
@@ -849,7 +849,7 @@ class _SessionRegistry:
         self._last_native_url: str                        = ""
 
     def has(self, browser_name: str | None = None) -> bool:
-        """Bu tarayıcı için (veya hiç) aktif bir otomasyon oturumu var mı?"""
+        """Is there an active automation session for this browser (or any)?"""
         with self._lock:
             if not browser_name:
                 return bool(self._sessions)
@@ -860,7 +860,7 @@ class _SessionRegistry:
         self._last_native_url = url
 
     def pop_native_url(self) -> str:
-        """Son native açılan URL'yi bir kez döndürür (tekrarı önlemek için tüketilir)."""
+        """Returns the last natively-opened URL once (consumed to avoid repeats)."""
         url, self._last_native_url = self._last_native_url, ""
         return url
 
@@ -956,12 +956,12 @@ def browser_control(
         _log(player, result)
         return result
 
-    # ── Gezinme HER ZAMAN native ─────────────────────────────────────────────
-    # go_to / search / new_tab siteyi kullanıcının kendi tarayıcısında açar —
-    # kendi profili, giriş yapılmış hesapları ve açılış sayfasıyla; tıpkı
-    # kullanıcının kendisi açmış gibi. about:blank'li kontrollü pencere burada
-    # asla açılmaz. Tek istisna: hâlihazırda süren bir otomasyon akışı varsa
-    # gezinme o pencerede devam eder (çok adımlı görevler bölünmesin diye).
+    # ── Navigation is ALWAYS native ──────────────────────────────────────────
+    # go_to / search / new_tab open the site in the user's own browser —
+    # their own profile, logged-in accounts and start page; exactly as if the
+    # user had opened it themselves. A controlled window with about:blank never
+    # opens here. The only exception: if an automation flow is already running,
+    # navigation continues in that window (so multi-step tasks aren't split).
     if action in ("go_to", "search", "new_tab"):
         if _registry.has(browser):
             sess = _registry.get(browser)
@@ -993,10 +993,10 @@ def browser_control(
         _log(player, result)
         return result
 
-    # ── Etkileşimli aksiyonlar (tıklama/yazma/okuma…) ────────────────────────
-    # Bunlar fiziksel olarak kontrol edilebilir bir tarayıcı gerektirir;
-    # yalnızca burada otomasyon penceresi açılır ve açılır açılmaz kullanıcının
-    # son gezindiği sayfaya gider — boş sayfada beklemez.
+    # ── Interactive actions (click/type/read…) ───────────────────────────────
+    # These require a physically controllable browser; the automation window
+    # only opens here, and as soon as it opens it goes to the user's last
+    # navigated page — it doesn't sit on a blank page.
     try:
         sess = _registry.get(browser)
     except Exception as e:
@@ -1058,3 +1058,75 @@ def _log(player, text: str):
     print(f"[Browser] {short}")
     if player:
         player.write_log(f"[browser] {short[:60]}")
+
+
+# ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
+TOOL = {
+    "name": "browser_control",
+    "description": "Controls any web browser. Use for: opening websites, searching the web, clicking elements, filling forms, scrolling, screenshots, navigation, any web-based task. Simple open/search requests launch the user's own browser normally (their real profile and logged-in accounts); interactive actions (click, type, fill_form...) attach an automation browser. Always pass the 'browser' parameter when the user specifies a browser (e.g. 'open in Edge', 'use Firefox', 'open Chrome'). Multiple browsers can run simultaneously.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "action": {
+                "type": "STRING",
+                "description": "go_to | search | click | type | scroll | fill_form | smart_click | smart_type | get_text | get_url | press | new_tab | close_tab | screenshot | back | forward | reload | switch | list_browsers | close | close_all"
+            },
+            "browser": {
+                "type": "STRING",
+                "description": "Target browser: chrome | edge | firefox | opera | operagx | brave | vivaldi | safari. Omit to use the currently active browser."
+            },
+            "url": {
+                "type": "STRING",
+                "description": "URL for go_to / new_tab action"
+            },
+            "query": {
+                "type": "STRING",
+                "description": "Search query for search action"
+            },
+            "engine": {
+                "type": "STRING",
+                "description": "Search engine: google | bing | duckduckgo | yandex (default: google)"
+            },
+            "selector": {
+                "type": "STRING",
+                "description": "CSS selector for click/type"
+            },
+            "text": {
+                "type": "STRING",
+                "description": "Text to click or type"
+            },
+            "description": {
+                "type": "STRING",
+                "description": "Element description for smart_click/smart_type"
+            },
+            "direction": {
+                "type": "STRING",
+                "description": "up | down for scroll"
+            },
+            "amount": {
+                "type": "INTEGER",
+                "description": "Scroll amount in pixels (default: 500)"
+            },
+            "key": {
+                "type": "STRING",
+                "description": "Key name for press action (e.g. Enter, Escape, F5)"
+            },
+            "path": {
+                "type": "STRING",
+                "description": "Save path for screenshot"
+            },
+            "incognito": {
+                "type": "BOOLEAN",
+                "description": "Open in private/incognito mode"
+            },
+            "clear_first": {
+                "type": "BOOLEAN",
+                "description": "Clear field before typing (default: true)"
+            }
+        },
+        "required": [
+            "action"
+        ]
+    },
+    "handler": browser_control,
+}

@@ -324,7 +324,7 @@ def _run_project(run_command: str, project_dir: Path, timeout: int = 30) -> str:
         return f"Run error: {e}"
 
 def _try_auto_install(error_output: str, project_dir: Path) -> bool:
-    """ModuleNotFoundError varsa eksik paketi otomatik kurmaya çalışır."""
+    """If there is a ModuleNotFoundError, tries to auto-install the missing package."""
     pattern = re.compile(
         r"No module named ['\"]([a-zA-Z0-9_\-\.]+)['\"]", re.IGNORECASE
     )
@@ -600,3 +600,35 @@ def dev_agent(
         speak        = speak,
         player       = player,
     )
+
+
+# ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
+TOOL = {
+    "name": "dev_agent",
+    "description": "Builds complete multi-file projects from scratch: plans, writes files, installs deps, opens VSCode, runs and fixes errors.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "description": {
+                "type": "STRING",
+                "description": "What the project should do"
+            },
+            "language": {
+                "type": "STRING",
+                "description": "Programming language (default: python)"
+            },
+            "project_name": {
+                "type": "STRING",
+                "description": "Optional project folder name"
+            },
+            "timeout": {
+                "type": "INTEGER",
+                "description": "Run timeout in seconds (default: 30)"
+            }
+        },
+        "required": [
+            "description"
+        ]
+    },
+    "handler": dev_agent,
+}

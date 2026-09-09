@@ -27,14 +27,13 @@ _MONTH_MAP: dict[str, int] = {
     "january": 1, "february": 2, "march": 3,     "april": 4,
     "may": 5,     "june": 6,     "july": 7,       "august": 8,
     "september": 9, "october": 10, "november": 11, "december": 12,
-    "ocak": 1,  "şubat": 2,  "mart": 3,   "nisan": 4,
-    "mayıs": 5, "haziran": 6, "temmuz": 7, "ağustos": 8,
-    "eylül": 9, "ekim": 10,  "kasım": 11, "aralık": 12,
 }
 
+# English fast-path only — Gemini (below) normalizes date expressions in ANY
+# language to YYYY-MM-DD, so no other language needs to be hardcoded here.
 _RELATIVE_MAP_KEYS = {
-    "today", "bugün",
-    "tomorrow", "yarın",
+    "today",
+    "tomorrow",
 }
 
 
@@ -53,9 +52,8 @@ def _parse_date(raw: str) -> str:
             pass
 
     relative = {
-        "today": today, "bugün": today,
+        "today": today,
         "tomorrow": today + timedelta(days=1),
-        "yarın":    today + timedelta(days=1),
     }
     for key, val in relative.items():
         if key in lower:
@@ -362,3 +360,49 @@ def flight_finder(parameters: dict, player=None, speak=None) -> str:
     except Exception as e:
         print(f"[FlightFinder] ❌ {e}")
         return f"Flight search failed, sir: {e}"
+
+
+# ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
+TOOL = {
+    "name": "flight_finder",
+    "description": "Searches Google Flights and speaks the best options.",
+    "parameters": {
+        "type": "OBJECT",
+        "properties": {
+            "origin": {
+                "type": "STRING",
+                "description": "Departure city or airport code"
+            },
+            "destination": {
+                "type": "STRING",
+                "description": "Arrival city or airport code"
+            },
+            "date": {
+                "type": "STRING",
+                "description": "Departure date (any format)"
+            },
+            "return_date": {
+                "type": "STRING",
+                "description": "Return date for round trips"
+            },
+            "passengers": {
+                "type": "INTEGER",
+                "description": "Number of passengers (default: 1)"
+            },
+            "cabin": {
+                "type": "STRING",
+                "description": "economy | premium | business | first"
+            },
+            "save": {
+                "type": "BOOLEAN",
+                "description": "Save results to Notepad"
+            }
+        },
+        "required": [
+            "origin",
+            "destination",
+            "date"
+        ]
+    },
+    "handler": flight_finder,
+}

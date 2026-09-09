@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from memory.config_manager import get_plugin_enabled
+from memory.config_manager import get_plugin_enabled, get_plugin_config
 
 _NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,63}$")
 _DEFAULT_PARAMS = {"type": "OBJECT", "properties": {}}
@@ -32,6 +32,7 @@ class PluginRecord:
     file: str = ""
     valid: bool = False
     error: str = ""
+    settings: Optional[dict] = None   # optional PLUGIN_SETTINGS schema (config fields)
 
 
 class PluginRegistry:
@@ -68,6 +69,32 @@ class PluginRegistry:
             self._logger(f"Plugin '{name}' crashed during run(): {e}")
             traceback.print_exc()
             return f"Sir, the '{name}' plugin failed: {e}"
+
+    # -- called by ui.py's settings tab to render per-plugin config forms --
+    def settings_schemas(self) -> list[dict]:
+        """One entry per settings SECTION, for enabled plugins that declare a
+        PLUGIN_SETTINGS schema. Sections are deduped by namespace so a suite of
+        plugins sharing one namespace (e.g. the printer trio) shows a single
+        form. Current stored values are merged in so the UI can pre-fill fields.
+        """
+        seen: set[str] = set()
+        out: list[dict] = []
+        for name, rec in self._plugins.items():
+            if not rec.settings or not get_plugin_enabled(name):
+                continue
+            ns = rec.settings.get("namespace") or rec.name
+            if ns in seen:
+                continue
+            seen.add(ns)
+            out.append({
+                "plugin":    rec.name,
+                "namespace": ns,
+                "title":     rec.settings.get("title") or rec.name,
+                "fields":    rec.settings.get("fields", []),
+                "values":    get_plugin_config(ns),
+                "action":    rec.settings.get("action"),   # optional test/connect button
+            })
+        return out
 
     # -- called by ui.py's Plugin Manager overlay --
     def list_for_ui(self) -> list[dict]:
@@ -125,8 +152,14 @@ def _validate(module, filename: str) -> PluginRecord:
         return PluginRecord(name=name, file=filename,
                              error="Missing callable run(parameters, ...) function.")
 
+    # Optional, self-describing settings schema (rendered by the settings UI).
+    # A malformed schema is ignored, never fatal — the plugin still loads.
+    settings = getattr(module, "PLUGIN_SETTINGS", None)
+    if not (isinstance(settings, dict) and isinstance(settings.get("fields"), list)):
+        settings = None
+
     return PluginRecord(name=name, description=description.strip(), parameters=parameters,
-                         run=run_fn, file=filename, valid=True, error="")
+                         run=run_fn, file=filename, valid=True, error="", settings=settings)
 
 
 def discover_plugins(plugins_dir: Path, core_tool_names: set[str],
