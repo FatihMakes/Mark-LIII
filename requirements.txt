@@ -57,3 +57,10 @@ wmi;        sys_platform == "win32"
 # macOS / Linux OS actions (volume, brightness, reminders) shell out to native
 # tools (pactl / brightnessctl / osascript / systemd), so no extra Python
 # packages are needed there — nothing Windows-specific is ever pulled in.
+
+# ── Optional: Arc Sentinel voice widget (widget/wake_widget_daemon.py) ────────
+# A standalone companion process, not required to run JARVIS itself. Reuses
+# openwakeword above for "Hey Jarvis"; also needs:
+#   pip install pywebview faster-whisper
+# (faster-whisper is the same library core/stt.py already uses for local STT —
+# only needed here if you haven't installed it for that already.)

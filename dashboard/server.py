@@ -604,6 +604,29 @@ class DashboardServer:
                 self._wake_callback()
             return JSONResponse({"ok": True})
 
+        # ── Arc Sentinel widget launcher ─────────────────────────────────────
+        # The dashboard runs on the same machine as JARVIS (phone/browser is
+        # just the remote control), so this starts a real local process on
+        # that machine — the voice-triggered widget daemon in widget/. It's a
+        # standalone companion, not something main.py's asyncio loop manages,
+        # so a launch here doesn't touch the live Gemini/local session at all.
+        @app.post("/api/widget/launch")
+        async def launch_widget(req: Request):
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            import subprocess, sys
+            script = BASE_DIR / "widget" / "wake_widget_daemon.py"
+            if not script.exists():
+                return JSONResponse({"error": "widget/wake_widget_daemon.py not found"}, status_code=404)
+            py      = Path(sys.executable)
+            pythonw = py.parent / "pythonw.exe"
+            target  = str(pythonw if pythonw.exists() else py)
+            try:
+                subprocess.Popen([target, str(script)], cwd=str(BASE_DIR))
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+            return JSONResponse({"ok": True})
+
         # ── Phone mic real-time audio → Gemini Live ──────────────────────────
 
         @app.websocket("/ws/phone-audio")

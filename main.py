@@ -52,6 +52,7 @@ from ui import JarvisUI
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
     save_session_summary, pop_last_session,
+    peek_recent_sessions, get_session_count,
     search_memory, set_trim_notifier,
 )
 
@@ -70,6 +71,7 @@ from actions.background_monitor import (
 from actions.web_search        import _news as _fetch_news_sync
 from memory.config_manager     import (
     get_brief_enabled, get_voice, get_wake_word_enabled, save_wake_word_enabled,    get_input_device, get_output_device,
+    is_local_engine_enabled, get_plugin_config,
 )
 from core.plugin_loader        import discover_plugins
 from core                      import undo as undo_stack
@@ -79,6 +81,7 @@ from core.action_loader        import discover_actions
 from core.wake_word            import (
     WakeWordDetector, is_ready as wake_is_ready, install_and_download as wake_install,
 )
+from core.local_control        import LocalControlServer
 
 # How long the assistant stays awake with no user speech before it auto-sleeps
 # again (wake-word mode only).
@@ -120,14 +123,40 @@ def _pcm_level(samples) -> float:
     return min(1.0, (rms - _LEVEL_FLOOR) / (_LEVEL_FULL - _LEVEL_FLOOR))
 
 
-def _get_api_key() -> str:
+# Both files below are re-read on every Live session (re)connect — including
+# transient reconnects (dropped packet, voice change, device switch) that can
+# happen several times in one conversation. Neither changes mid-run in the
+# common case, so each is cached by mtime: a cache hit is a stat() call
+# instead of a full read + (for api_keys.json) a JSON parse, and an on-disk
+# edit (e.g. pasting in a new API key) is still picked up on the next read.
+_prompt_cache: tuple[float, str] | None = None
+_api_config_cache: tuple[float, dict] | None = None
+
+
+def _load_api_config() -> dict:
+    global _api_config_cache
+    mtime = API_CONFIG_PATH.stat().st_mtime
+    if _api_config_cache is not None and _api_config_cache[0] == mtime:
+        return _api_config_cache[1]
     with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+        cfg = json.load(f)
+    _api_config_cache = (mtime, cfg)
+    return cfg
+
+
+def _get_api_key() -> str:
+    return _load_api_config()["gemini_api_key"]
 
 
 def _load_system_prompt() -> str:
+    global _prompt_cache
     try:
-        return PROMPT_PATH.read_text(encoding="utf-8")
+        mtime = PROMPT_PATH.stat().st_mtime
+        if _prompt_cache is not None and _prompt_cache[0] == mtime:
+            return _prompt_cache[1]
+        text = PROMPT_PATH.read_text(encoding="utf-8")
+        _prompt_cache = (mtime, text)
+        return text
     except Exception:
         return (
             "You are JARVIS, Tony Stark's AI assistant. "
@@ -399,6 +428,13 @@ class JarvisLive:
 
         self._enhanced_live = True  # proactive audio; auto-disabled if the server rejects it
 
+        # ── Engine mode: Cloud (Gemini Live) vs. Local (offline STT/LLM/TTS) ──
+        # Decided once at startup, not re-read mid-run: the two pipelines are
+        # structurally different (a streaming multimodal session vs. a
+        # blocking record → transcribe → chat → speak loop), so switching
+        # requires a restart — see ⚙ → PLUGIN SETTINGS → ENGINE in the UI.
+        self._mode = "local" if is_local_engine_enabled() else "cloud"
+
         _base_dir = Path(__file__).resolve().parent
         _inline_names = {t["name"] for t in TOOL_DECLARATIONS}
 
@@ -419,7 +455,7 @@ class JarvisLive:
             logger=lambda msg: (print(f"[Plugins] {msg}"), self.ui.write_log(f"SYS: {msg}")),
         )
         self.ui.get_plugins = self._plugin_registry.list_for_ui
-        self.ui.get_plugin_settings = self._plugin_registry.settings_schemas  # ⚙ settings tab
+        self.ui.get_plugin_settings = self._settings_schemas  # ⚙ settings tab
         self.ui.request_say = self.plugin_say   # plugins: mid-task speech channel
 
         # ── Wake word ────────────────────────────────────────────────────────
@@ -548,6 +584,58 @@ class JarvisLive:
         except Exception as e:
             print(f"[PluginSay] {e}")
 
+    # ── Engine mode settings (Cloud vs. Local) ────────────────────────────────
+    # Rendered by the existing, fully generic PluginSettingsOverlay (ui.py) —
+    # it iterates whatever sections ui.get_plugin_settings() returns and knows
+    # nothing about any specific plugin, so prepending a hand-built section
+    # here needed no new Qt code. Persisted through the same
+    # save_plugin_config("local_engine", …) path a real plugin's settings
+    # would use.
+
+    def _settings_schemas(self) -> list[dict]:
+        return [self._engine_settings_section()] + self._plugin_registry.settings_schemas()
+
+    def _engine_settings_section(self) -> dict:
+        return {
+            "plugin":    "engine",
+            "namespace": "local_engine",
+            "title":     "🧠 ENGINE — Local Mode (offline STT/LLM/TTS)",
+            "fields": [
+                {"key": "enabled", "type": "toggle", "label": "Run fully local (restart required)",
+                 "default": False},
+                {"key": "llm_provider", "type": "choice", "label": "Backend",
+                 "options": ["ollama", "openai"], "default": "ollama"},
+                {"key": "llm_url", "type": "text", "label": "Server URL",
+                 "default": "http://localhost:11434", "placeholder": "http://localhost:11434"},
+                {"key": "llm_model", "type": "text", "label": "Model name",
+                 "default": "llama3.2", "placeholder": "llama3.2"},
+                {"key": "llm_temperature", "type": "text", "label": "Temperature (0.0-2.0)",
+                 "default": "0.7"},
+                {"key": "llm_max_tokens", "type": "text", "label": "Max reply tokens",
+                 "default": "300"},
+            ],
+            "values": get_plugin_config("local_engine"),
+            "action": {"label": "TEST CONNECTION", "run": self._test_local_engine},
+        }
+
+    def _test_local_engine(self, values: dict) -> tuple[bool, str]:
+        """Off-thread reachability probe for the settings panel's TEST button —
+        checks the values the user just typed, before they even save, so a
+        wrong URL/port is caught here rather than by the local pipeline
+        failing silently later."""
+        import requests
+        provider = str(values.get("llm_provider") or "ollama").strip().lower()
+        default_url = "http://localhost:1234" if provider == "openai" else "http://localhost:11434"
+        url = (str(values.get("llm_url") or "").strip() or default_url).rstrip("/")
+        try:
+            health = f"{url}/v1/models" if provider == "openai" else f"{url}/api/tags"
+            resp = requests.get(health, timeout=5)
+            if resp.status_code == 200:
+                return True, f"Reachable at {url}"
+            return False, f"Server at {url} returned HTTP {resp.status_code}"
+        except Exception as e:
+            return False, f"Unreachable at {url}: {e}"
+
     def request_reconnect(self, keep_context: bool = True, reason: str = ""):
         """Thread-safe: ask the run loop to tear down and rebuild the Live
         session. Called from the Qt thread. No-op until the async loop and
@@ -633,6 +721,19 @@ class JarvisLive:
         elif not self.ui.muted:
             self.ui.set_state("LISTENING")
 
+    def _local_control_state(self) -> dict:
+        """Polled by the Arc Sentinel widget (core/local_control.py) to keep
+        its mic/interrupt buttons in sync with the real session — called from
+        the control server's own thread, so only cheap, already-thread-safe
+        reads belong here (a lock-guarded bool, a plain property)."""
+        with self._speaking_lock:
+            speaking = self._is_speaking
+        return {
+            "muted":    self.ui.muted,
+            "speaking": speaking,
+            "awake":    self._awake,
+        }
+
     def interrupt(self) -> None:
         """Stop JARVIS mid-speech: drain queued audio and open mic immediately."""
         self._interrupted = True
@@ -668,12 +769,21 @@ class JarvisLive:
         self.ui.write_log(f"ERR: {tool_name} — {short}")
         self.speak(f"Sir, {tool_name} encountered an error. {short}")
 
-    def _build_config(self) -> types.LiveConnectConfig:
+    def _assemble_system_prompt(self) -> str:
+        """Build the full system-instruction text: current time, identity
+        (assistant name / how to address the user), the memory block, then
+        the static JARVIS protocol from prompt.txt.
+
+        Extracted out of _build_config() so Local Mode's tool-calling loop
+        (_run_local_loop) gets the exact same system prompt content the
+        Gemini Live path builds, instead of a second, drifting copy of this
+        assembly logic. _build_config()'s own output is unchanged by this
+        split — it just calls this instead of inlining the same code."""
         from datetime import datetime
 
         # Load customization from config
         try:
-            _cfg = json.loads(open(API_CONFIG_PATH, encoding="utf-8").read())
+            _cfg = _load_api_config()
             self._asst_name = (_cfg.get("assistant_name") or "JARVIS").strip()
             _user_name = (_cfg.get("user_name") or "").strip()
         except Exception:
@@ -712,17 +822,28 @@ class JarvisLive:
         if mem_str:
             parts.append(mem_str)
         parts.append(sys_prompt)
+        return "\n".join(parts)
+
+    def _all_tool_declarations(self) -> list[dict]:
+        """The same Gemini-shaped tool list _build_config() feeds to the Live
+        API — TOOL_DECLARATIONS + every discovered action + every enabled
+        plugin — for Local Mode to convert into OpenAI/Ollama's tool format
+        (see core.tool_schema)."""
+        return (
+            TOOL_DECLARATIONS
+            + self._action_registry.get_tool_declarations()
+            + self._plugin_registry.get_tool_declarations()
+        )
+
+    def _build_config(self) -> types.LiveConnectConfig:
+        system_instruction = self._assemble_system_prompt()
 
         cfg = dict(
             response_modalities=["AUDIO"],
             output_audio_transcription={},
             input_audio_transcription={},
-            system_instruction="\n".join(parts),
-            tools=[{"function_declarations": (
-                TOOL_DECLARATIONS
-                + self._action_registry.get_tool_declarations()
-                + self._plugin_registry.get_tool_declarations()
-            )}],
+            system_instruction=system_instruction,
+            tools=[{"function_declarations": self._all_tool_declarations()}],
             # Hand back the handle captured from the last session_resumption
             # update. `handle=None` is exactly the old behaviour (ask for
             # handles, start fresh), so the first connect of a run is unchanged.
@@ -773,8 +894,49 @@ class JarvisLive:
                 response={"result": "ok", "silent": True}
             )
 
+        result = await self._dispatch_tool(name, args)
+
+        if not self.ui.muted:
+            self.ui.set_state("LISTENING")
+
+        print(f"[JARVIS] 📤 {name} → {str(result)[:80]}")
+        return types.FunctionResponse(
+            id=fc.id, name=name,
+            response={"result": result}
+        )
+
+    async def _dispatch_tool(self, name: str, args: dict) -> str:
+        """The actual tool router: everything except the Gemini-specific
+        `save_memory` fast path above (which returns a `silent` FunctionResponse
+        flag that only means something to the Live API and isn't worth
+        threading through a second caller).
+
+        Split out of _execute_tool so Local Mode's text tool-calling loop
+        (_run_local_loop) can dispatch against the exact same action/plugin
+        registry and inline tools as the Gemini Live path, instead of
+        duplicating this router. Returns the plain string result — the two
+        callers wrap it differently (a Gemini FunctionResponse here, a
+        {"role": "tool", ...} message in local mode)."""
         loop   = asyncio.get_event_loop()
         result = "Done."
+
+        # Vision needs a live multimodal session to inject the captured image
+        # into (see _receive_audio's turn_complete handling) — Local Mode's
+        # text-only LLM has nothing to send that image to, so pretending to
+        # capture it would leave the model describing an image it never saw.
+        if name in ("screen_process", "close_camera") and self._mode == "local":
+            return ("Vision is not available in Local Mode — it requires the "
+                    "Cloud (Gemini Live) engine. Switch engines in Settings "
+                    "to use the camera or screen.")
+
+        if name == "save_memory":
+            category = args.get("category", "notes")
+            key      = args.get("key", "")
+            value    = args.get("value", "")
+            if key and value:
+                update_memory({category: {key: {"value": value}}})
+                print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
+            return "ok"
 
         try:
             if name == "recall_memory":
@@ -894,14 +1056,7 @@ class JarvisLive:
             traceback.print_exc()
             self.speak_error(name, e)
 
-        if not self.ui.muted:
-            self.ui.set_state("LISTENING")
-
-        print(f"[JARVIS] 📤 {name} → {str(result)[:80]}")
-        return types.FunctionResponse(
-            id=fc.id, name=name,
-            response={"result": result}
-        )
+        return result
 
     async def _send_realtime(self):
         while True:
@@ -1336,6 +1491,16 @@ class JarvisLive:
         log = self._session_log
         if len(log) < 3:          # need at least one exchange to be worth saving
             return
+        if self._mode == "local":
+            # This calls Gemini's API to write the summary — sending the local,
+            # offline conversation to the cloud is exactly the privacy
+            # regression Local Mode exists to avoid, so it's skipped rather
+            # than silently done anyway. The morning-briefing callback this
+            # feeds just won't have anything to reference after a local
+            # session; the conversation itself isn't lost, only its summary.
+            self._session_log = []
+            self.ui.write_log("SYS: Session summary skipped — Local Mode makes no cloud calls.")
+            return
         self._session_log = []    # reset immediately so the next session starts clean
 
         memory = load_memory()
@@ -1443,13 +1608,17 @@ class JarvisLive:
             self._proactive.mark_triggered()
 
             try:
-                memory       = await asyncio.to_thread(load_memory)
-                monitors     = await asyncio.to_thread(list_monitors)
-                recent_turns = self._session_log[-8:] if self._session_log else []
+                memory        = await asyncio.to_thread(load_memory)
+                monitors      = await asyncio.to_thread(list_monitors)
+                recent_turns  = self._session_log[-8:] if self._session_log else []
+                past_sessions = await asyncio.to_thread(peek_recent_sessions, 2)
+                depth         = await asyncio.to_thread(get_session_count)
                 prompt = self._proactive.build_prompt(
-                    memory       = memory,
-                    monitors     = monitors or None,
-                    recent_turns = recent_turns or None,
+                    memory             = memory,
+                    monitors           = monitors or None,
+                    recent_turns       = recent_turns or None,
+                    past_sessions      = past_sessions or None,
+                    relationship_depth = depth,
                 )
                 await self.session.send_client_content(
                     turns={"role": "user", "parts": [{"text": prompt}]},
@@ -1554,6 +1723,34 @@ class JarvisLive:
         except Exception as e:
             print(f"[Dashboard] Disabled: {e}")
             self._dashboard = None
+
+        # Loopback-only control channel for local companion processes (the
+        # Arc Sentinel widget's mic-mute / interrupt buttons) — stdlib only,
+        # so it works whether or not the (optional) dashboard is installed.
+        def _toggle_mute_and_settle():
+            # toggle_mute() only queues a cross-thread Qt signal — it returns
+            # before _toggle_mute() actually runs on the Qt thread. Without
+            # this short wait, the POST /mute response (read right after)
+            # would report the PRE-toggle state; the widget's next poll
+            # would still self-correct, but this makes the click feel instant
+            # instead of one 900ms poll cycle behind.
+            self.ui.toggle_mute()
+            time.sleep(0.05)
+
+        self._local_control = LocalControlServer(
+            get_state      = self._local_control_state,
+            on_mute_toggle = _toggle_mute_and_settle,
+            on_interrupt   = self.interrupt,
+        )
+        if not self._local_control.start():
+            print("[LocalControl] Port already in use — probably another JARVIS instance.")
+
+        if self._mode == "local":
+            # Entirely different pipeline (blocking record → transcribe →
+            # chat → speak loop, no Live session, no TaskGroup) — the cloud
+            # while-loop below is untouched and simply never reached.
+            await self._run_local_loop()
+            return
 
         while True:
             try:
@@ -1726,6 +1923,223 @@ class JarvisLive:
             delay = getattr(self, "_conn_backoff", 3)
             print(f"[JARVIS] Reconnecting in {delay}s...")
             await asyncio.sleep(delay)
+
+    # ── Local Mode: offline STT → local LLM → offline TTS ─────────────────────
+    # An additive second pipeline, selected via ⚙ → PLUGIN SETTINGS → ENGINE.
+    # It reuses the same tool registry, system prompt assembly, and tool
+    # dispatch (_dispatch_tool) as the Gemini Live path above — only the
+    # transport (audio streaming vs. record/transcribe/chat/speak) differs.
+    # Feature parity is intentionally NOT a goal: vision and Gemini-specific
+    # behaviour (session resumption, proactive audio) are unavailable here,
+    # and _dispatch_tool already says so rather than pretending to work.
+
+    async def _record_utterance(self, max_secs: float = 15.0) -> np.ndarray:
+        """Record from the mic until ~700 ms of silence following detected
+        speech, or `max_secs` as a hard cap. Returns float32 mono @16kHz,
+        normalised to [-1, 1] for faster-whisper / Vosk. Reuses _pcm_level()
+        (the same loudness measure the cloud path's HUD waveform uses) as a
+        cheap, dependency-free voice-activity gate — no separate VAD model."""
+        loop = asyncio.get_event_loop()
+        chunks: list[np.ndarray] = []
+        state = {"speech_started": False, "silence_run": 0.0}
+        done = asyncio.Event()
+
+        def callback(indata, frames, time_info, status):
+            level = _pcm_level(indata)
+            chunks.append(indata.copy())
+            block_secs = frames / SEND_SAMPLE_RATE
+            if level > 0.03:
+                state["speech_started"] = True
+                state["silence_run"] = 0.0
+            elif state["speech_started"]:
+                state["silence_run"] += block_secs
+            if state["speech_started"] and state["silence_run"] > 0.7:
+                loop.call_soon_threadsafe(done.set)
+
+        _mic_name = get_input_device()
+        _mic_dev  = audio_devices.resolve(_mic_name, "input")
+        stream = sd.InputStream(
+            samplerate=SEND_SAMPLE_RATE, channels=CHANNELS, dtype="int16",
+            blocksize=CHUNK_SIZE, device=_mic_dev, callback=callback,
+        )
+        with stream:
+            try:
+                await asyncio.wait_for(done.wait(), timeout=max_secs)
+            except asyncio.TimeoutError:
+                pass
+
+        if not chunks:
+            return np.zeros(0, dtype=np.float32)
+        audio_i16 = np.concatenate(chunks).flatten()
+        return audio_i16.astype(np.float32) / 32768.0
+
+    async def _run_local_loop(self) -> None:
+        from core import llm_client
+        from core.tool_schema import gemini_tools_to_openai
+        from core import tts as tts_mod
+
+        cfg      = get_plugin_config("local_engine")
+        provider = llm_client.get_llm_provider()
+
+        self.ui.write_log(f"SYS: Starting Local Mode ({provider}) — no cloud calls will be made.")
+        self.ui.set_state("THINKING")
+
+        # Fail loudly and stop — never fall back to the cloud API the user
+        # explicitly opted out of by choosing Local Mode.
+        reachable = await asyncio.to_thread(llm_client.ensure_ollama_running)
+        if not reachable:
+            url, model = llm_client.get_llm_settings()
+            self.ui.write_log(
+                f"ERR: Local LLM backend unreachable at {url}. "
+                f"Start it (or check the URL in Settings), or switch back to "
+                f"Cloud mode in ⚙ → PLUGIN SETTINGS → ENGINE."
+            )
+            self.ui.set_state("SLEEPING")
+            return
+
+        try:
+            static_prompt = _load_system_prompt()
+            await asyncio.to_thread(llm_client.warmup_model, static_prompt)
+        except Exception as e:
+            print(f"[Local] Warmup skipped: {e}")
+
+        stt_engine_name = str(cfg.get("local_stt_engine", "whisper")).lower()
+        try:
+            if stt_engine_name == "vosk":
+                from core.stt import VoskSTT
+                stt = await asyncio.to_thread(
+                    VoskSTT, None, cfg.get("local_stt_language", "en-us"))
+            else:
+                from core.stt import WhisperSTT
+                stt = await asyncio.to_thread(
+                    WhisperSTT, cfg.get("local_stt_model", "base"), cfg.get("local_stt_language"))
+        except Exception as e:
+            self.ui.write_log(f"ERR: Local speech-to-text failed to load: {e}")
+            self.ui.set_state("SLEEPING")
+            return
+
+        try:
+            tts_player = await asyncio.to_thread(tts_mod.create_tts_player, cfg)
+        except Exception as e:
+            self.ui.write_log(f"ERR: Local text-to-speech failed to load: {e}")
+            self.ui.set_state("SLEEPING")
+            return
+
+        openai_tools = gemini_tools_to_openai(self._all_tool_declarations())
+
+        if self._wake_enabled:
+            self._ensure_wake_detector()
+            self._awake = False
+            self.ui.set_state("SLEEPING")
+            self.ui.write_log("SYS: JARVIS online (Local) — sleeping. Say 'Hey Jarvis' to wake me.")
+        else:
+            self._awake = True
+            self.ui.write_log("SYS: JARVIS online (Local Mode).")
+
+        messages: list[dict] = [{"role": "system", "content": self._assemble_system_prompt()}]
+
+        while True:
+            if self._wake_enabled and not self._awake:
+                await asyncio.sleep(0.2)
+                continue
+
+            if not self.ui.muted:
+                self.ui.set_state("LISTENING")
+            try:
+                audio = await self._record_utterance()
+            except Exception as e:
+                print(f"[Local] Mic error: {e}")
+                await asyncio.sleep(1.0)
+                continue
+
+            if audio.size < int(SEND_SAMPLE_RATE * 0.3):   # too short — no real speech
+                continue
+
+            self.ui.set_state("THINKING")
+            try:
+                if stt_engine_name == "vosk":
+                    text, _ = await asyncio.to_thread(
+                        stt.process_chunk, (audio * 32768.0).astype(np.int16).tobytes())
+                else:
+                    text = await asyncio.to_thread(stt.transcribe, audio)
+            except Exception as e:
+                self.ui.write_log(f"ERR: Transcription failed: {e}")
+                continue
+
+            text = (text or "").strip()
+            if not text:
+                continue
+
+            self.ui.write_log(f"You: {text}")
+            self._session_log.append(f"User: {text}")
+            self._last_user_speech = time.monotonic()
+            messages.append({"role": "user", "content": text})
+
+            try:
+                resp = await asyncio.to_thread(llm_client.call_llm, messages, openai_tools)
+            except Exception as e:
+                self.ui.write_log(f"ERR: Local LLM call failed: {e}")
+                continue
+
+            # Tool-calling loop — capped so a model stuck calling tools can
+            # never spin forever.
+            for _ in range(5):
+                tool_calls = resp.get("tool_calls") or []
+                if not tool_calls:
+                    break
+                messages.append({
+                    "role": "assistant",
+                    "content": resp.get("content", ""),
+                    "tool_calls": tool_calls,
+                })
+                for tc in tool_calls:
+                    fn   = tc.get("function", {})
+                    name = fn.get("name", "")
+                    args = fn.get("arguments") or {}
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except Exception:
+                            args = {}
+
+                    if name == "shutdown_jarvis":
+                        self.ui.write_log("SYS: Shutdown requested.")
+                        try:
+                            await asyncio.to_thread(tts_player.speak, "Goodbye, sir.")
+                        except Exception:
+                            pass
+                        import os as _os
+                        _os._exit(0)
+
+                    print(f"[JARVIS] 🔧 {name}  {args}")
+                    self.ui.set_state("THINKING")
+                    tool_result = await self._dispatch_tool(name, args)
+                    print(f"[JARVIS] 📤 {name} → {str(tool_result)[:80]}")
+                    messages.append({
+                        "role": "tool", "tool_call_id": tc.get("id", ""),
+                        "name": name, "content": str(tool_result),
+                    })
+                try:
+                    resp = await asyncio.to_thread(llm_client.call_llm, messages, openai_tools)
+                except Exception as e:
+                    self.ui.write_log(f"ERR: Local LLM call failed: {e}")
+                    resp = {"content": "", "tool_calls": []}
+                    break
+
+            reply = (resp.get("content") or "").strip()
+            if reply:
+                self.ui.write_log(f"{self._asst_name}: {reply}")
+                self._session_log.append(f"{self._asst_name}: {reply}")
+                messages.append({"role": "assistant", "content": reply})
+                self.set_speaking(True)
+                try:
+                    await asyncio.to_thread(tts_player.speak, reply)
+                except Exception as e:
+                    print(f"[Local] TTS error: {e}")
+                self.set_speaking(False)
+
+            if not self.ui.muted:
+                self.ui.set_state("LISTENING")
 
 def main():
     ui = JarvisUI("face.png")
