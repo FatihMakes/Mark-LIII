@@ -53,6 +53,19 @@ def get_llm_provider() -> str:
 
 
 def _load_config() -> dict:
+    # Settings live under the "local_engine" plugin_config namespace — they're
+    # rendered and saved through the same generic settings-form mechanism a
+    # real plugin's PLUGIN_SETTINGS would use (see main.py:
+    # JarvisLive._engine_settings_section), which also gives this a free,
+    # cache-invalidated read via memory.config_manager instead of a second,
+    # uncached parse of api_keys.json.
+    try:
+        from memory.config_manager import get_plugin_config
+        cfg = get_plugin_config("local_engine")
+        if cfg:
+            return cfg
+    except Exception:
+        pass
     try:
         return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except Exception:
@@ -221,9 +234,25 @@ def check_model_available(log: Callable | None = None) -> bool:
 def get_llm_settings() -> tuple[str, str]:
     """Returns (base_url, model_name)."""
     cfg   = _load_config()
-    url   = cfg.get("llm_url",   _DEFAULTS["llm_url"]).rstrip("/")
-    model = cfg.get("llm_model", _DEFAULTS["llm_model"])
+    url   = (cfg.get("llm_url") or _DEFAULTS["llm_url"]).rstrip("/")
+    model = cfg.get("llm_model") or _DEFAULTS["llm_model"]
     return url, model
+
+
+def get_llm_tuning() -> tuple[float, int]:
+    """Returns (temperature, max_tokens) from the settings panel, falling back
+    to sane defaults on anything unparseable — the fields are free-text so a
+    stray non-numeric value must never crash a tool call."""
+    cfg = _load_config()
+    try:
+        temperature = float(cfg.get("llm_temperature", 0.7))
+    except (TypeError, ValueError):
+        temperature = 0.7
+    try:
+        max_tokens = int(float(cfg.get("llm_max_tokens", 300)))
+    except (TypeError, ValueError):
+        max_tokens = 300
+    return temperature, max(1, max_tokens)
 
 
 def call_llm(
@@ -237,16 +266,18 @@ def call_llm(
     Returns:
         {"content": str, "tool_calls": list}
     """
-    url, model = get_llm_settings()
-    provider   = get_llm_provider()
+    url, model         = get_llm_settings()
+    provider           = get_llm_provider()
+    temperature, max_tokens = get_llm_tuning()
 
     if provider == "openai":
         endpoint = f"{url}/v1/chat/completions"
         payload: dict = {
-            "model":      model,
-            "messages":   messages,
-            "stream":     False,
-            "max_tokens": 150,
+            "model":       model,
+            "messages":    messages,
+            "stream":      False,
+            "max_tokens":  max_tokens,
+            "temperature": temperature,
         }
         if tools:
             payload["tools"]       = tools
@@ -286,7 +317,7 @@ def call_llm(
         "messages":   messages,
         "stream":     False,
         "keep_alive": -1,
-        "options":    {"num_predict": 150, "num_gpu": 99},
+        "options":    {"num_predict": max_tokens, "temperature": temperature, "num_gpu": 99},
     }
     if tools:
         payload["tools"] = tools

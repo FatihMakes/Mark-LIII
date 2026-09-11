@@ -51,6 +51,15 @@
     .enc-badge.off { display: block; background: rgba(255,100,100,0.08); border: 1px solid rgba(255,100,100,0.2); color: #f87171; }
     .url { font-size: 10px; font-family: monospace; color: var(--muted); padding: 4px 9px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
 
+    .hdr-btn {
+      font-size: 10px; font-weight: 700; letter-spacing: 1px;
+      color: var(--muted); background: var(--surface); border: 1px solid var(--border);
+      padding: 5px 10px; border-radius: 6px; cursor: pointer;
+      transition: opacity 0.15s, border-color 0.15s, color 0.15s;
+    }
+    .hdr-btn:hover  { opacity: 0.85; border-color: var(--accent); color: var(--accent); }
+    .hdr-btn:active { transform: scale(0.97); }
+
     /* ── FEED ── */
     main { flex: 1; overflow-y: auto; padding: 14px 16px 8px; display: flex; flex-direction: column; gap: 10px; }
     main::-webkit-scrollbar { width: 3px; }
@@ -139,6 +148,7 @@
     <div class="logo"><em>J</em>ARVIS</div>
     <div class="pill" id="pill"><span class="dot"></span><span id="st">Connecting</span></div>
     <div class="enc-badge" id="enc">AES-256</div>
+    <button class="hdr-btn" id="widget-btn" onclick="doLaunchWidget()" title="Launch the Arc Sentinel voice widget on this PC">🛰 WIDGET</button>
     <div class="spacer"></div>
     <div class="url">__IP__:__PORT__</div>
   </header>
@@ -390,6 +400,21 @@
     function doWake() {
       sys('Sending wake signal…');
       _authFetch('/api/wake', { method: 'POST' });
+    }
+
+    async function doLaunchWidget() {
+      toast('Launching widget on JARVIS PC…');
+      try {
+        const r = await _authFetch('/api/widget/launch', { method: 'POST' });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j.error) {
+          toast(j.error || 'Launch failed');
+          return;
+        }
+        sys('Arc Sentinel widget launched — say "Hey Jarvis" on that PC to show it.');
+      } catch (e) {
+        toast('Launch failed — is JARVIS reachable?');
+      }
     }
 
     document.getElementById('inp').addEventListener('keydown', e => {

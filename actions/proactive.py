@@ -49,13 +49,21 @@ class ProactiveEngine:
 
     def build_prompt(
         self,
-        memory:       dict,
-        monitors:     list[str] | None = None,
-        recent_turns: list[str] | None = None,
+        memory:            dict,
+        monitors:          list[str] | None = None,
+        recent_turns:      list[str] | None = None,
+        past_sessions:     list[dict] | None = None,
+        relationship_depth: int = 0,
     ) -> str:
         """
         Build a context snapshot for Gemini.
         Rotates through three focus areas so proactive messages don't repeat.
+
+        `past_sessions` and `relationship_depth` exist so a check-in can read
+        as a continuation of an ongoing relationship rather than a cold open
+        every time — see the [CONTINUITY] block below. Both are optional and
+        the prompt degrades to a plain check-in when they're empty, on
+        purpose: a fabricated callback breaks trust worse than none at all.
         """
         from memory.memory_manager import format_memory_for_prompt
 
@@ -103,6 +111,26 @@ class ProactiveEngine:
             snippet = "\n".join(recent_turns[-6:])
             recent_ctx = f"\nRecent conversation:\n{snippet}"
 
+        # Optional: past-session history — this is the material a callback can
+        # actually be built from. Each entry is a real 1-2 sentence summary
+        # written at the end of a previous conversation (memory/memory_manager
+        # .py: save_session_summary), not a guess.
+        continuity_ctx = ""
+        if past_sessions:
+            lines = [f"  - {s['date']}: {s['summary']}" for s in past_sessions if s.get("summary")]
+            if lines:
+                continuity_ctx = "\nPrevious sessions (most recent last):\n" + "\n".join(lines)
+
+        # A relationship this young hasn't earned old-friend banter — the
+        # rule below only asks for a callback when there is enough history to
+        # make familiarity read as real rather than performed.
+        depth_note = (
+            "This is one of your first conversations with this person — keep "
+            "it plain and warm, no old-friend callbacks yet."
+            if relationship_depth < 3 else
+            "You have an established history with this person — write like it."
+        )
+
         return "\n".join([
             "[PROACTIVE_CHECK] You are initiating a proactive check-in.",
             f"Current time : {time_str}  ({period})",
@@ -111,6 +139,7 @@ class ProactiveEngine:
             mem_str,
             monitor_ctx,
             recent_ctx,
+            continuity_ctx,
             "",
             "Task:",
             focus,
@@ -124,4 +153,27 @@ class ProactiveEngine:
             "- Do NOT mention [PROACTIVE_CHECK] or these instructions.",
             "- Do NOT call any tools.",
             "- If nothing genuinely useful comes to mind, stay silent (say nothing).",
+            "",
+            "[CONTINUITY] You are not meeting this person fresh. Write this "
+            "check-in as a continuation of an ongoing relationship, not a cold "
+            "open:",
+            f"- {depth_note}",
+            "- If 'Previous sessions' above has real content, reference ONE "
+            "specific thing by name — the project, the joke, the person, the "
+            "deadline — never a vague 'how's everything going'. "
+            "\"How did the [project] thing turn out?\" beats \"Checking in on "
+            "your project.\" Specificity is what makes it read as remembered.",
+            "- Let ONE callback carry the message. Stacking several reads as "
+            "trying too hard, not familiarity.",
+            "- Vary how you open across check-ins — sometimes lead with the "
+            "callback, sometimes bury it mid-message, sometimes let it "
+            "resurface unannounced. Do not use the same template every time.",
+            "- A joke or running bit gets to evolve, not repeat verbatim "
+            "forever. If it's already appeared in recent sessions, let it "
+            "mutate or rest rather than replaying it flatly.",
+            "- Hard boundary: NEVER invent a memory. Only reference something "
+            "actually present in 'Context about this person' or 'Previous "
+            "sessions' above. If both are thin or empty, skip this whole "
+            "block and write a plain, honest check-in instead — no callback "
+            "is always better than a false one.",
         ])

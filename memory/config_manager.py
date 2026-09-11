@@ -33,12 +33,34 @@ def save_api_keys(gemini_api_key: str) -> None:
         json.dumps(data, indent=2),
         encoding="utf-8"
     )
+    _invalidate_cache()
+
+# Every getter below reads the whole file via load_api_keys(). With N plugins,
+# a single get_tool_declarations() call (fired on every Live session connect —
+# including transient reconnects mid-conversation) used to mean N full
+# read+json.loads() passes over the same unchanged file. Cached by mtime: a
+# cache hit costs one stat() instead of a read + parse, and any on-disk edit
+# (the settings UI, or a hand edit) is still picked up on the next read since
+# every writer below goes through _invalidate_cache().
+_cache: tuple[float, dict] | None = None
+
+
+def _invalidate_cache() -> None:
+    global _cache
+    _cache = None
+
 
 def load_api_keys() -> dict:
+    global _cache
     if not CONFIG_FILE.exists():
         return {}
     try:
-        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        mtime = CONFIG_FILE.stat().st_mtime
+        if _cache is not None and _cache[0] == mtime:
+            return _cache[1]
+        data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        _cache = (mtime, data)
+        return data
     except Exception as e:
         print(f"❌ Failed to load api_keys.json: {e}")
         return {}
@@ -73,6 +95,7 @@ def save_assistant_config(assistant_name: str, user_name: str) -> None:
     data["assistant_name"] = assistant_name.strip() or "JARVIS"
     data["user_name"] = user_name.strip()
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+    _invalidate_cache()
 
 
 # ── Assistant voice ──────────────────────────────────────────────────────────
@@ -102,6 +125,7 @@ def save_voice(voice_name: str) -> None:
     v = (voice_name or "").strip()
     data["voice_name"] = v if v in AVAILABLE_VOICES else DEFAULT_VOICE
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+    _invalidate_cache()
 
 
 def get_wake_word_enabled() -> bool:
@@ -119,6 +143,7 @@ def save_wake_word_enabled(enabled: bool) -> None:
             data = {}
     data["wake_word_enabled"] = bool(enabled)
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+    _invalidate_cache()
 
 
 def get_brief_enabled() -> bool:
@@ -135,6 +160,7 @@ def save_brief_enabled(enabled: bool) -> None:
             data = {}
     data["morning_brief_enabled"] = enabled
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+    _invalidate_cache()
 
 
 # ── Audio devices ────────────────────────────────────────────────────────────
@@ -159,6 +185,7 @@ def _patch_config(**fields) -> None:
             data = {}
     data.update(fields)
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+    _invalidate_cache()
 
 
 def get_input_device() -> str:
@@ -202,6 +229,20 @@ def get_plugin_setting(namespace: str, key: str, default=None):
     return get_plugin_config(namespace).get(key, default)
 
 
+# ── Engine mode (Cloud vs. Local) ───────────────────────────────────────────
+# Stored under the "local_engine" plugin_config namespace rather than a new
+# top-level key: it's rendered and saved through the exact same generic
+# settings-form mechanism the plugin-settings overlay already provides
+# (PluginSettingsOverlay / save_plugin_config), so no new UI code was needed
+# to expose it — see JarvisLive._engine_settings_section() in main.py.
+def is_local_engine_enabled() -> bool:
+    """True if the user switched the assistant to fully local, offline
+    execution (Settings -> Plugin Settings -> ENGINE). Read once at process
+    startup (main.py: JarvisLive.__init__) — toggling requires a restart,
+    since it swaps the entire session pipeline, not just a config value."""
+    return bool(get_plugin_config("local_engine").get("enabled", False))
+
+
 def save_plugin_config(namespace: str, values: dict) -> None:
     """Merge `values` into a namespace's stored config (read-modify-write, like
     every other helper here). Only the provided keys are touched."""
@@ -222,6 +263,7 @@ def save_plugin_config(namespace: str, values: dict) -> None:
     pc[namespace] = cur
     data["plugin_config"] = pc
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+    _invalidate_cache()
 
 
 def save_plugin_enabled(plugin_name: str, enabled: bool) -> None:
@@ -238,3 +280,4 @@ def save_plugin_enabled(plugin_name: str, enabled: bool) -> None:
     plugins_cfg[plugin_name] = enabled
     data["plugins_enabled"] = plugins_cfg
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+    _invalidate_cache()

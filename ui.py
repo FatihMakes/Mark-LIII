@@ -2746,6 +2746,7 @@ class MainWindow(QMainWindow):
     _confirm_sig    = pyqtSignal(str, str)   # (title, detail) — irreversible-action gate
     _confirm_hide_sig = pyqtSignal()
     _wake_dl_sig    = pyqtSignal(bool, str)  # wake-word install finished (ok, message)
+    _mute_toggle_sig = pyqtSignal()          # flip mic mute from any thread (e.g. the widget's control server)
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -2889,6 +2890,7 @@ class MainWindow(QMainWindow):
 
         self._log_sig.connect(self._log.append_log)
         self._state_sig.connect(self._apply_state)
+        self._mute_toggle_sig.connect(self._toggle_mute)
         self._content_sig.connect(self._show_content)
         self._reconfig_sig.connect(self._show_setup)
         self._camera_sig.connect(self._show_camera_frame)
@@ -3340,6 +3342,32 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self._log.append_log(f"ERR: Shortcut failed — {e}")
 
+    def _launch_arc_widget(self):
+        """
+        Starts widget/wake_widget_daemon.py — the voice-triggered Arc Sentinel
+        widget — as a separate, detached process. Self-contained like
+        _create_desktop_shortcut() above: it needs no state from JarvisLive,
+        so it doesn't route through main.py at all. A crash or a missing
+        dependency there can never affect this window or the live session.
+        """
+        script = Path(__file__).resolve().parent / "widget" / "wake_widget_daemon.py"
+        if not script.exists():
+            self._log.append_log("ERR: widget/wake_widget_daemon.py not found.")
+            return
+
+        python  = Path(sys.executable)
+        pythonw = python.parent / "pythonw.exe"
+        target  = str(pythonw if pythonw.exists() else python)
+
+        try:
+            subprocess.Popen([target, str(script)], cwd=str(script.parent))
+            self._log.append_log(
+                "SYS: Arc Sentinel widget launching — say 'Hey Jarvis' to show it, "
+                "'bye jarvis' to dismiss it."
+            )
+        except Exception as e:
+            self._log.append_log(f"ERR: Could not launch widget — {e}")
+
     def _toggle_fullscreen(self):
         if self.isFullScreen():
             self.showNormal()
@@ -3751,6 +3779,16 @@ class MainWindow(QMainWindow):
         self._wake_btn.setText("🎙  WAKE WORD")
         self._wake_btn.setStyleSheet(_BTN_STYLE_DIM)
         self._wake_sleep_btn.hide()
+
+        widget_btn = QPushButton("🛰  LAUNCH ARC SENTINEL")
+        widget_btn.setFixedHeight(30)
+        widget_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        widget_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        widget_btn.setToolTip("Starts the voice-triggered widget — say 'Hey Jarvis' "
+                              "to show it, 'bye jarvis' to dismiss it.")
+        widget_btn.setStyleSheet(_BTN_STYLE_PRI)
+        widget_btn.clicked.connect(self._launch_arc_widget)
+        lay.addWidget(widget_btn)
 
         audio_btn = QPushButton("🎧  AUDIO DEVICES")
         audio_btn.setFixedHeight(26)
@@ -4538,7 +4576,15 @@ class JarvisUI:
     @muted.setter
     def muted(self, v: bool):
         if v != self._win._muted:
-            self._win._toggle_mute()
+            self.toggle_mute()
+
+    def toggle_mute(self) -> None:
+        """Thread-safe: flip mic mute from any thread (Qt widget mutation
+        must happen on the Qt thread, so this goes through a signal exactly
+        like write_log/set_state — the direct _win._toggle_mute() call the
+        setter used before this only ever happened to be safe because it was
+        only ever invoked from the Qt thread itself)."""
+        self._win._mute_toggle_sig.emit()
 
     @property
     def current_file(self) -> str | None:
