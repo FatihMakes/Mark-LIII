@@ -86,6 +86,13 @@ def _compress(img_bytes: bytes, source_format: str = "PNG") -> tuple[bytes, str]
 
 
 def _capture_screen() -> tuple[bytes, str]:
+    # Wayland first: mss only sees XWayland (black frame on Hyprland).
+    try:
+        from core import wayland as _wl
+        if _wl.backend_available():
+            return _compress(_wl.screenshot_png(), "PNG")
+    except Exception:
+        pass
 
     if not _MSS:
         raise RuntimeError("mss is not installed. Run: pip install mss")

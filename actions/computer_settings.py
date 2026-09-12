@@ -323,8 +323,21 @@ def open_task_manager():
     elif _OS == "Darwin":
         subprocess.Popen(["open", "-a", "Activity Monitor"])
     else:
-        for cmd in [["gnome-system-monitor"], ["xfce4-taskmanager"], ["htop"]]:
-            if subprocess.run(["which", cmd[0]], capture_output=True).returncode == 0:
+        # Prefer native GUI monitors; fall back to btop in a terminal.
+        # (gnome-system-monitor is often absent outside GNOME.)
+        import shutil
+        for cmd in [["missioncenter"], ["gnome-system-monitor"],
+                    ["xfce4-taskmanager"]]:
+            if shutil.which(cmd[0]):
+                subprocess.Popen(cmd)
+                return
+        for term in ("kitty", "foot", "alacritty", "gnome-terminal",
+                     "xfce4-terminal", "konsole"):
+            if shutil.which(term) and shutil.which("btop"):
+                subprocess.Popen([term, "-e", "btop"])
+                return
+        for cmd in [["htop"]]:
+            if shutil.which(cmd[0]):
                 subprocess.Popen(cmd)
                 break
 

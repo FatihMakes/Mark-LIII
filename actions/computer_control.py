@@ -29,6 +29,13 @@ try:
 except ImportError:
     _PYPERCLIP = False
 
+try:
+    from core import wayland as _wl
+    _WAYLAND = _wl.backend_available()
+except Exception:
+    _wl = None
+    _WAYLAND = False
+
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
@@ -155,6 +162,8 @@ def _user_profile() -> dict:
     return {}
 
 def _type(text: str, interval: float = 0.03) -> str:
+    if _WAYLAND:
+        return _wl.type_text(text)
     _require_pyautogui()
     time.sleep(0.3)
     pyautogui.typewrite(text, interval=interval)
@@ -162,6 +171,11 @@ def _type(text: str, interval: float = 0.03) -> str:
 
 
 def _smart_type(text: str, clear_first: bool = True) -> str:
+    if _WAYLAND:
+        if clear_first:
+            _wl.clear_field()
+            time.sleep(0.1)
+        return _wl.type_text(text)
     _require_pyautogui()
     if clear_first:
         _clear_field()
@@ -179,6 +193,11 @@ def _smart_type(text: str, clear_first: bool = True) -> str:
 
 
 def _click(x=None, y=None, button: str = "left", clicks: int = 1) -> str:
+    if _WAYLAND:
+        if x is not None and y is not None:
+            _wl.mouse_move(int(x), int(y))
+            time.sleep(0.15)
+        return _wl.mouse_click(button, clicks)
     _require_pyautogui()
     if x is not None and y is not None:
         pyautogui.click(x, y, button=button, clicks=clicks)
@@ -188,18 +207,24 @@ def _click(x=None, y=None, button: str = "left", clicks: int = 1) -> str:
 
 
 def _hotkey(*keys) -> str:
+    if _WAYLAND:
+        return _wl.hotkey(*keys)
     _require_pyautogui()
     pyautogui.hotkey(*keys)
     return f"Hotkey: {'+'.join(keys)}"
 
 
 def _press(key: str) -> str:
+    if _WAYLAND:
+        return _wl.press_key(key)
     _require_pyautogui()
     pyautogui.press(key)
     return f"Pressed: {key}"
 
 
 def _scroll(direction: str = "down", amount: int = 3) -> str:
+    if _WAYLAND:
+        return _wl.scroll(direction, amount)
     _require_pyautogui()
     vertical   = direction in ("up", "down")
     clicks     = amount if direction in ("up", "right") else -amount
@@ -208,12 +233,22 @@ def _scroll(direction: str = "down", amount: int = 3) -> str:
 
 
 def _move(x: int, y: int, duration: float = 0.3) -> str:
+    if _WAYLAND:
+        return _wl.mouse_move(x, y)
     _require_pyautogui()
     pyautogui.moveTo(x, y, duration=duration)
     return f"Mouse → ({x}, {y})"
 
 
 def _drag(x1: int, y1: int, x2: int, y2: int, duration: float = 0.5) -> str:
+    if _WAYLAND:
+        _wl.mouse_move(x1, y1)
+        time.sleep(0.2)
+        _wl.mouse_down("left")
+        _wl.mouse_move(x2, y2)
+        time.sleep(0.2)
+        _wl.mouse_up("left")
+        return f"Dragged ({x1},{y1}) → ({x2},{y2})"
     _require_pyautogui()
     pyautogui.moveTo(x1, y1, duration=0.2)
     pyautogui.dragTo(x2, y2, duration=duration, button="left")
@@ -221,6 +256,8 @@ def _drag(x1: int, y1: int, x2: int, y2: int, duration: float = 0.5) -> str:
 
 
 def _clipboard_get() -> str:
+    if _WAYLAND:
+        return _wl.clipboard_get()
     if _PYPERCLIP:
         return pyperclip.paste()
     _hotkey("ctrl", "c")
@@ -229,6 +266,8 @@ def _clipboard_get() -> str:
 
 
 def _clipboard_paste(text: str) -> str:
+    if _WAYLAND:
+        return _wl.clipboard_paste(text)
     if _PYPERCLIP:
         pyperclip.copy(text)
         time.sleep(0.1)
@@ -240,14 +279,19 @@ def _clipboard_paste(text: str) -> str:
 
 
 def _screenshot(save_path: str | None = None) -> str:
-    _require_pyautogui()
     path = _safe_screenshot_path(save_path)
+    if _WAYLAND:
+        path.write_bytes(_wl.screenshot_png())
+        return f"Screenshot saved: {path}"
+    _require_pyautogui()
     img  = pyautogui.screenshot()
     img.save(str(path))
     return f"Screenshot saved: {path}"
 
 
 def _clear_field() -> str:
+    if _WAYLAND:
+        return _wl.clear_field()
     _require_pyautogui()
     select_key = "command" if _get_os() == "mac" else "ctrl"
     pyautogui.hotkey(select_key, "a")
@@ -286,6 +330,11 @@ def _focus_window(title: str) -> str:
             return f"focus_window (macOS) failed: {e}"
 
     if os_name == "linux":
+        if _WAYLAND:
+            try:
+                return _wl.focus_window(title)
+            except Exception:
+                pass
         try:
             result = subprocess.run(
                 ["wmctrl", "-a", title],
@@ -320,12 +369,16 @@ def _screen_find(description: str) -> tuple[int, int] | None:
         from google import genai
         from google.genai import types as gtypes
 
-        _require_pyautogui()
-        w, h  = pyautogui.size()
-        img   = pyautogui.screenshot()
-        buf   = io.BytesIO()
-        img.save(buf, format="PNG")
-        image_bytes = buf.getvalue()
+        if _WAYLAND:
+            w, h = _wl.screen_size()
+            image_bytes = _wl.screenshot_png()
+        else:
+            _require_pyautogui()
+            w, h  = pyautogui.size()
+            img   = pyautogui.screenshot()
+            buf   = io.BytesIO()
+            img.save(buf, format="PNG")
+            image_bytes = buf.getvalue()
 
         client = genai.Client(api_key=api_key)
         prompt = (
@@ -399,6 +452,7 @@ def computer_control(
       wait          — sleep N seconds
       clear_field   — select-all + delete
       focus_window  — bring window to foreground
+      workspace     — switch Hyprland workspace 1..9 (Wayland)
       screen_find   — AI element finder (returns x,y)
       screen_click  — AI element finder + click
       random_data   — generate fake form data
@@ -492,6 +546,11 @@ def computer_control(
         if action == "focus_window":
             return _focus_window(params.get("title", ""))
 
+        if action == "workspace":
+            if _WAYLAND:
+                return _wl.workspace(int(params.get("number", 1)))
+            return "workspace switching needs a Wayland session on Linux"
+
         if action == "random_data":
             dt     = params.get("type", "name")
             result = _random_data(dt)
@@ -523,7 +582,7 @@ TOOL = {
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "type | smart_type | click | double_click | right_click | hotkey | press | scroll | move | copy | paste | screenshot | wait | clear_field | focus_window | screen_find | screen_click | random_data | user_data"
+                "description": "type | smart_type | click | double_click | right_click | hotkey | press | scroll | move | copy | paste | screenshot | wait | clear_field | focus_window | workspace | screen_find | screen_click | random_data | user_data"
             },
             "text": {
                 "type": "STRING",
@@ -560,6 +619,10 @@ TOOL = {
             "title": {
                 "type": "STRING",
                 "description": "Window title for focus_window"
+            },
+            "number": {
+                "type": "INTEGER",
+                "description": "Workspace number 1..9 for workspace"
             },
             "description": {
                 "type": "STRING",
