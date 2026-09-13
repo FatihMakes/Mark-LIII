@@ -5,6 +5,8 @@ import math
 import os
 import platform
 import random
+import shutil
+import re
 import subprocess
 import sys
 import threading
@@ -23,7 +25,7 @@ from PyQt6.QtCore import (
     QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal,
 )
 from PyQt6.QtGui import (
-    QBrush, QColor, QConicalGradient, QDragEnterEvent, QDropEvent, QFont,
+    QBrush, QColor, QConicalGradient, QDesktopServices, QDragEnterEvent, QDropEvent, QFont,
     QFontDatabase, QKeySequence, QLinearGradient, QPainter, QPainterPath,
     QPen, QPixmap, QRadialGradient, QShortcut,
 )
@@ -32,6 +34,46 @@ from PyQt6.QtWidgets import (
     QMainWindow, QPushButton, QScrollArea, QSizePolicy, QSplitter,
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QProgressBar,
 )
+
+try:
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+    from PyQt6.QtWebEngineCore import (
+        QWebEngineSettings, QWebEnginePage, QWebEngineProfile,
+        QWebEngineUrlRequestInterceptor,
+    )
+    _WEBENGINE_OK = True
+except Exception:
+    QWebEngineView = None
+    QWebEngineSettings = None
+    QWebEnginePage = None
+    QWebEngineProfile = None
+    QWebEngineUrlRequestInterceptor = None
+    _WEBENGINE_OK = False
+
+
+if _WEBENGINE_OK:
+    class _YouTubeRefererInterceptor(QWebEngineUrlRequestInterceptor):
+        """Give YouTube embeds an explicit HTTP Referer.
+
+        YouTube error 153 is raised when the player request arrives without
+        a Referer / equivalent client identification. A top-level QWebEngine
+        navigation can omit it, so the dedicated player profile adds one only
+        for YouTube media-related requests.
+        """
+        def interceptRequest(self, info):
+            try:
+                host = info.requestUrl().host().lower()
+                if (
+                    "youtube.com" in host
+                    or "youtube-nocookie.com" in host
+                    or "googlevideo.com" in host
+                    or "ytimg.com" in host
+                ):
+                    info.setHttpHeader(b"Referer", b"https://www.youtube.com/")
+            except Exception:
+                pass
+else:
+    _YouTubeRefererInterceptor = None
 
 # ── Which Mark this is ───────────────────────────────────────────────────────
 # One constant, read by the window title, the header badge and the PROTOCOL
@@ -50,6 +92,57 @@ def _base_dir() -> Path:
 BASE_DIR   = _base_dir()
 CONFIG_DIR = BASE_DIR / "config"
 API_FILE   = CONFIG_DIR / "api_keys.json"
+
+
+def _find_mpv_executable() -> str | None:
+    """Locate an MPV binary without changing the user's system."""
+    candidates = []
+
+    env_path = (os.environ.get("JARVIS_MPV_PATH") or "").strip()
+    if env_path:
+        candidates.append(Path(env_path))
+
+    # Portable layouts supported by JARVIS.
+    candidates.extend([
+        BASE_DIR / "mpv.exe",
+        BASE_DIR / "mpv" / "mpv.exe",
+        BASE_DIR / "bin" / "mpv.exe",
+        BASE_DIR / "tools" / "mpv.exe",
+    ])
+
+    found = shutil.which("mpv") or shutil.which("mpv.exe")
+    if found:
+        candidates.append(Path(found))
+
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return str(candidate.resolve())
+        except Exception:
+            pass
+    return None
+
+
+def _find_ytdlp_executable() -> str | None:
+    """Find the yt-dlp CLI installed by requirements.txt."""
+    found = shutil.which("yt-dlp") or shutil.which("yt-dlp.exe")
+    if found:
+        return found
+
+    candidates = [
+        Path(sys.executable).parent / "yt-dlp.exe",
+        Path(sys.executable).parent / "Scripts" / "yt-dlp.exe",
+        BASE_DIR / "yt-dlp.exe",
+        BASE_DIR / "bin" / "yt-dlp.exe",
+        BASE_DIR / "tools" / "yt-dlp.exe",
+    ]
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return str(candidate.resolve())
+        except Exception:
+            pass
+    return None
 
 
 def _read_full_config() -> dict:
@@ -227,9 +320,9 @@ class _SysMetrics:
     def __init__(self):
         self.cpu  = 0.0
         self.mem  = 0.0
-        self.net  = 0.0   
-        self.gpu  = -1.0  
-        self.tmp  = -1.0  
+        self.net  = 0.0
+        self.gpu  = -1.0
+        self.tmp  = -1.0
         self._lock = threading.Lock()
         self._last_net = psutil.net_io_counters()
         self._last_net_t = time.time()
@@ -2746,6 +2839,9 @@ class MainWindow(QMainWindow):
     _confirm_sig    = pyqtSignal(str, str)   # (title, detail) — irreversible-action gate
     _confirm_hide_sig = pyqtSignal()
     _wake_dl_sig    = pyqtSignal(bool, str)  # wake-word install finished (ok, message)
+    _youtube_sig     = pyqtSignal(str, str, str)   # (stream_url, source_url, title)
+    _youtube_close_sig = pyqtSignal()
+    _youtube_browser_sig = pyqtSignal()
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -2842,10 +2938,65 @@ class MainWindow(QMainWindow):
         )
         _cam_v.addWidget(self._cam_live_lbl, stretch=1)
 
-        # Stack: 0 = animated HUD, 1 = live camera
+        # Embedded YouTube container. The WebEngine view is created lazily on
+        # first use so normal JARVIS startup stays unchanged.
+        self._youtube_cont = QWidget()
+        self._youtube_cont.setStyleSheet("background: #000000;")
+        _yt_v = QVBoxLayout(self._youtube_cont)
+        _yt_v.setContentsMargins(0, 0, 0, 0)
+        _yt_v.setSpacing(0)
+
+        _yt_hdr = QHBoxLayout()
+        _yt_hdr.setContentsMargins(9, 5, 8, 5)
+        self._youtube_title_lbl = QLabel("▶  YOUTUBE")
+        self._youtube_title_lbl.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        self._youtube_title_lbl.setStyleSheet(f"color: {C.PRI}; background: transparent;")
+        _yt_hdr.addWidget(self._youtube_title_lbl)
+        _yt_hdr.addStretch()
+
+        self._youtube_browser_btn = QPushButton("OPEN IN BROWSER  ↗")
+        self._youtube_browser_btn.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        self._youtube_browser_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._youtube_browser_btn.setStyleSheet(f"""
+            QPushButton {{
+                color: {C.TEXT_DIM}; background: transparent;
+                border: 1px solid {C.BORDER}; border-radius: 2px; padding: 2px 7px;
+            }}
+            QPushButton:hover {{ color: {C.PRI}; border-color: {C.PRI_DIM}; }}
+        """)
+        self._youtube_browser_btn.clicked.connect(self._youtube_open_browser)
+        _yt_hdr.addWidget(self._youtube_browser_btn)
+
+        _yt_close = QPushButton("✕  CLOSE")
+        _yt_close.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        _yt_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        _yt_close.setStyleSheet(f"""
+            QPushButton {{
+                color: {C.TEXT_DIM}; background: transparent;
+                border: none; padding: 2px 6px;
+            }}
+            QPushButton:hover {{ color: {C.PRI}; }}
+        """)
+        _yt_close.clicked.connect(self._close_youtube)
+        _yt_hdr.addWidget(_yt_close)
+        _yt_v.addLayout(_yt_hdr)
+
+        self._youtube_host = QVBoxLayout()
+        self._youtube_host.setContentsMargins(0, 0, 0, 0)
+        self._youtube_host.setSpacing(0)
+        _yt_v.addLayout(self._youtube_host, stretch=1)
+
+        self._youtube_view = None
+        self._youtube_url = ""
+        self._youtube_mpv_proc = None
+        self._youtube_mpv_exe = _find_mpv_executable()
+        self._youtube_ytdlp_exe = _find_ytdlp_executable()
+
+        # Stack: 0 = animated HUD, 1 = live camera, 2 = embedded YouTube
         self._hud_cam_stack = QStackedWidget()
         self._hud_cam_stack.addWidget(self.hud)
         self._hud_cam_stack.addWidget(_cam_cont)
+        self._hud_cam_stack.addWidget(self._youtube_cont)
 
         self._center_split = QSplitter(Qt.Orientation.Vertical)
         self._center_split.setStyleSheet(f"""
@@ -2898,6 +3049,9 @@ class MainWindow(QMainWindow):
         self._cam_frame_sig.connect(self._on_cam_frame)
         self._clipboard_sig.connect(self._show_clipboard_panel)
         self._wake_dl_sig.connect(self._on_wake_install_done)
+        self._youtube_sig.connect(self._show_youtube)
+        self._youtube_close_sig.connect(self._close_youtube)
+        self._youtube_browser_sig.connect(self._youtube_open_browser)
         self._cam_stop = threading.Event()
 
         # Camera preview overlay (child of central widget, positioned in resizeEvent)
@@ -2931,6 +3085,135 @@ class MainWindow(QMainWindow):
             cw.height() - ph - 28,
             pw, ph,
         )
+
+    # --- Embedded YouTube player -------------------------------------------
+    def _ensure_youtube_view(self) -> bool:
+        """Create a native QWidget that MPV can render into."""
+        if self._youtube_view is not None:
+            return True
+
+        if not self._youtube_mpv_exe:
+            self._log.append_log(
+                "SYS: MPV was not found. Put mpv.exe in the Mark-LIII folder "
+                "or add MPV to PATH."
+            )
+            return False
+
+        try:
+            view = QWidget(self._youtube_cont)
+            view.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+            try:
+                view.setAttribute(Qt.WidgetAttribute.WA_DontCreateNativeAncestors, True)
+            except Exception:
+                pass
+            view.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            )
+            view.setStyleSheet("background:#000; border:none;")
+            self._youtube_host.addWidget(view)
+            view.show()
+            # Force creation of the native window handle now.
+            int(view.winId())
+            self._youtube_view = view
+            return True
+        except Exception as e:
+            self._log.append_log(f"SYS: Could not create MPV video surface — {e}")
+            self._youtube_view = None
+            return False
+
+    def _stop_youtube_mpv(self) -> None:
+        proc = self._youtube_mpv_proc
+        self._youtube_mpv_proc = None
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1.2)
+                except Exception:
+                    proc.kill()
+        except Exception:
+            pass
+
+    def _show_youtube(self, url: str, source_url: str, title: str = "") -> None:
+        """Render YouTube through native MPV inside the JARVIS GUI."""
+        self._youtube_url = str(source_url or url or "").strip()
+        video_url = str(url or "").strip()
+        if not video_url:
+            return
+
+        if not self._ensure_youtube_view():
+            return
+
+        label = (title or "YouTube").strip()
+        self._youtube_title_lbl.setText(f"▶  {label[:62].upper()}")
+        self._hud_cam_stack.setCurrentIndex(2)
+
+        self._stop_youtube_mpv()
+
+        try:
+            wid = int(self._youtube_view.winId())
+            cmd = [
+                self._youtube_mpv_exe,
+                f"--wid={wid}",
+                "--force-window=yes",
+                "--keep-open=no",
+                "--idle=no",
+                "--really-quiet",
+                "--no-terminal",
+                "--hwdec=auto-safe",
+                "--cache=yes",
+                "--ytdl=yes",
+                "--input-default-bindings=yes",
+                "--input-cursor=yes",
+            ]
+
+            if self._youtube_ytdlp_exe:
+                cmd.append(
+                    f"--script-opts=ytdl_hook-ytdl_path={self._youtube_ytdlp_exe}"
+                )
+
+            cmd.append(video_url)
+
+            popen_kwargs = {
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+            }
+            if platform.system() == "Windows":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+            self._youtube_mpv_proc = subprocess.Popen(cmd, **popen_kwargs)
+            self._log.append_log(f"[YouTube] MPV embedded in JARVIS GUI: {label}")
+
+            # If MPV exits immediately, surface a useful error in the JARVIS log.
+            QTimer.singleShot(1400, self._check_youtube_mpv_started)
+        except Exception as e:
+            self._youtube_mpv_proc = None
+            self._log.append_log(f"SYS: MPV could not start — {e}")
+
+    def _check_youtube_mpv_started(self) -> None:
+        proc = self._youtube_mpv_proc
+        if proc is not None and proc.poll() is not None:
+            code = proc.returncode
+            self._youtube_mpv_proc = None
+            self._log.append_log(
+                f"SYS: MPV exited before playback (code {code}). "
+                "Check that MPV and yt-dlp are installed/current."
+            )
+
+    def _youtube_open_browser(self) -> None:
+        """Move the currently embedded video to the user's default browser."""
+        if self._youtube_url:
+            QDesktopServices.openUrl(QUrl(self._youtube_url))
+            self._log.append_log("[YouTube] Opened current video in browser.")
+
+    def _close_youtube(self) -> None:
+        self._stop_youtube_mpv()
+        self._youtube_url = ""
+        if self._hud_cam_stack.currentIndex() == 2:
+            self._hud_cam_stack.setCurrentIndex(0)
 
     # --- Live camera stream in HUD area ------------------------------------
     def _on_cam_stream(self, start: bool) -> None:
@@ -4514,6 +4797,15 @@ class MainWindow(QMainWindow):
         self._log.append_log(f"SYS: Initialised. OS={os_name.upper()}. {self._assistant_name} online.")
 
 
+
+    def closeEvent(self, event):
+        """Ensure an embedded MPV child process cannot outlive JARVIS."""
+        try:
+            self._stop_youtube_mpv()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
 class _RootShim:
     def __init__(self, app: QApplication):
         self._app = app
@@ -4658,6 +4950,29 @@ class JarvisUI:
     def show_content(self, title: str, text: str):
         """Thread-safe: display content in the panel below the HUD."""
         self._win._content_sig.emit(title[:48], text[:4000])
+
+    @property
+    def youtube_gui_available(self) -> bool:
+        return bool(self._win._youtube_mpv_exe)
+
+    def show_youtube(
+        self, url: str, title: str = "YouTube", source_url: str | None = None
+    ) -> bool:
+        """Thread-safe: play YouTube through MPV embedded in the JARVIS GUI."""
+        if not self._win._youtube_mpv_exe:
+            return False
+        self._win._youtube_sig.emit(
+            str(url), str(source_url or url), str(title)
+        )
+        return True
+
+    def close_youtube(self) -> None:
+        self._win._youtube_close_sig.emit()
+
+    def open_youtube_in_browser(self) -> bool:
+        """Thread-safe: open the currently embedded video in the default browser."""
+        self._win._youtube_browser_sig.emit()
+        return True
 
     def prompt_reconfig(self):
         """Thread-safe: show the API key setup overlay (e.g. after an auth error)."""

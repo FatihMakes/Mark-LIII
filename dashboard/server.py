@@ -16,6 +16,12 @@ import secrets
 import socket
 import string
 import time
+import os
+import platform
+import shutil
+import subprocess
+import sys
+import urllib.request
 from pathlib import Path
 
 _DEPS_OK = False
@@ -38,7 +44,124 @@ except Exception:
 BASE_DIR    = Path(__file__).resolve().parent.parent
 STATIC_DIR  = Path(__file__).parent / "static"
 PORT        = 8000
+PUBLIC_TUNNEL_ENABLED = False
 MAX_UPLOAD_MB = 500
+
+
+
+def _ensure_local_tls(ip_address: str) -> bool:
+    """Create a persistent local CA and a LAN server certificate.
+
+    HTTP :8000 remains available for bootstrap/login and CA installation.
+    HTTPS :8000 serves chat, voice, files, and WebSockets on one secure origin.
+    The CA is generated once and kept stable; the leaf cert is regenerated when
+    the current LAN IP is missing from its SANs.
+    """
+    cert_dir = BASE_DIR / "config" / "certs"
+    cert_dir.mkdir(parents=True, exist_ok=True)
+    ca_key_p = cert_dir / "jarvis-ca.key"
+    ca_crt_p = cert_dir / "jarvis-ca.crt"
+    srv_key_p = cert_dir / "jarvis.key"
+    srv_crt_p = cert_dir / "jarvis.crt"
+
+    try:
+        import ipaddress
+        from datetime import datetime, timedelta, timezone
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
+
+        # Reuse a stable CA when present.
+        if ca_key_p.exists() and ca_crt_p.exists():
+            ca_key = serialization.load_pem_private_key(ca_key_p.read_bytes(), password=None)
+            ca_cert = x509.load_pem_x509_certificate(ca_crt_p.read_bytes())
+        else:
+            ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            name = x509.Name([
+                x509.NameAttribute(NameOID.COMMON_NAME, "JARVIS Local Voice CA"),
+                x509.NameAttribute(NameOID.ORGANIZATION_NAME, "JARVIS"),
+            ])
+            now = datetime.now(timezone.utc)
+            ca_cert = (
+                x509.CertificateBuilder()
+                .subject_name(name).issuer_name(name)
+                .public_key(ca_key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(now - timedelta(days=1))
+                .not_valid_after(now + timedelta(days=3650))
+                .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+                .add_extension(
+                    x509.KeyUsage(
+                        digital_signature=True, key_encipherment=False,
+                        content_commitment=False, data_encipherment=False,
+                        key_agreement=False, key_cert_sign=True, crl_sign=True,
+                        encipher_only=False, decipher_only=False,
+                    ),
+                    critical=True,
+                )
+                .sign(ca_key, hashes.SHA256())
+            )
+            ca_key_p.write_bytes(ca_key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.TraditionalOpenSSL,
+                serialization.NoEncryption(),
+            ))
+            ca_crt_p.write_bytes(ca_cert.public_bytes(serialization.Encoding.PEM))
+
+        # Check whether the current leaf certificate already covers this LAN IP.
+        regenerate = True
+        if srv_key_p.exists() and srv_crt_p.exists():
+            try:
+                cert = x509.load_pem_x509_certificate(srv_crt_p.read_bytes())
+                san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+                ips = {str(v) for v in san.get_values_for_type(x509.IPAddress)}
+                regenerate = ip_address not in ips or "127.0.0.1" not in ips
+            except Exception:
+                regenerate = True
+
+        if regenerate:
+            srv_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            subject = x509.Name([
+                x509.NameAttribute(NameOID.COMMON_NAME, "JARVIS Local Remote"),
+                x509.NameAttribute(NameOID.ORGANIZATION_NAME, "JARVIS"),
+            ])
+            now = datetime.now(timezone.utc)
+            sans = [
+                x509.DNSName("localhost"),
+                x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
+            ]
+            try:
+                sans.append(x509.IPAddress(ipaddress.ip_address(ip_address)))
+            except ValueError:
+                pass
+            srv_cert = (
+                x509.CertificateBuilder()
+                .subject_name(subject).issuer_name(ca_cert.subject)
+                .public_key(srv_key.public_key())
+                .serial_number(x509.random_serial_number())
+                .not_valid_before(now - timedelta(days=1))
+                .not_valid_after(now + timedelta(days=825))
+                .add_extension(x509.SubjectAlternativeName(sans), critical=False)
+                .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+                .add_extension(
+                    x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
+                    critical=False,
+                )
+                .sign(ca_key, hashes.SHA256())
+            )
+            srv_key_p.write_bytes(srv_key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.TraditionalOpenSSL,
+                serialization.NoEncryption(),
+            ))
+            srv_crt_p.write_bytes(srv_cert.public_bytes(serialization.Encoding.PEM))
+
+        return True
+    except Exception as exc:
+        print(f"[Dashboard] Local HTTPS unavailable: {exc}")
+        return False
+
 
 
 def _make_uploads_dir() -> Path:
@@ -381,7 +504,16 @@ class DashboardServer:
         self._pending_keys: dict[str, float] = {}
         self._device_sessions: dict[str, dict] = {}  # device_token → {session_key}
         self._phone_audio_queue: asyncio.Queue    = asyncio.Queue(maxsize=200)
+        self._phone_audio_clients: set[WebSocket] = set()
         self._uploads_dir                 = UPLOADS_DIR
+        self._ready                       = False
+        self._serve_error: str | None     = None
+        self._startup_done                = False
+        self._public_url: str | None      = None
+        self._tunnel_process              = None
+        self._secure_ready                = False
+        self._secure_error: str | None    = None
+        self._secure_server_task          = None
         self._login_html                  = _read("login.html")
         self._app_html                    = _read("app.html")
         self.app                          = self._build_app()
@@ -400,15 +532,57 @@ class DashboardServer:
         certs = BASE_DIR / "config" / "certs"
         return (certs / "jarvis.key").exists() and (certs / "jarvis.crt").exists()
 
+    def get_secure_url(self) -> str | None:
+        if not self._ssl_enabled() or not self._secure_ready:
+            return None
+        return f"https://{self._ip}:{PORT}"
+
+    def secure_ready(self) -> bool:
+        return bool(self._secure_ready)
+
+    def secure_error(self) -> str | None:
+        return self._secure_error
+
     def get_url(self) -> str:
+        if PUBLIC_TUNNEL_ENABLED and self._public_url:
+            return self._public_url
         proto = "https" if self._ssl_enabled() else "http"
         return f"{proto}://{self._ip}:{PORT}"
 
+    def get_local_url(self) -> str:
+        proto = "https" if self._ssl_enabled() else "http"
+        return f"{proto}://127.0.0.1:{PORT}"
+
+    def is_ready(self) -> bool:
+        # Verify the actual listening socket, not only Uvicorn's internal flag.
+        # This method is called from the Qt UI thread, so keep it synchronous
+        # and very short.
+        if not self._ready:
+            return False
+        try:
+            with socket.create_connection(("127.0.0.1", PORT), timeout=0.25):
+                return True
+        except OSError:
+            return False
+
+    def serve_error(self) -> str | None:
+        return self._serve_error
+
+    def startup_done(self) -> bool:
+        return self._startup_done
+
+    def public_enabled(self) -> bool:
+        return PUBLIC_TUNNEL_ENABLED
+
+    def public_ready(self) -> bool:
+        # Disabled is an intentional local/LAN mode, not a pending state.
+        return (not PUBLIC_TUNNEL_ENABLED) or bool(self._public_url)
+
     def get_manual_url(self) -> str:
-        """URL for manual browser entry. When HTTPS active, points to alias port (also HTTPS)."""
-        if self._ssl_enabled():
-            return f"{self._ip}:{PORT + 1}"
-        return f"{self._ip}:{PORT}"
+        if PUBLIC_TUNNEL_ENABLED and self._public_url:
+            return self._public_url
+        proto = "https" if self._ssl_enabled() else "http"
+        return f"{self._ip}:{PORT}" if proto == "http" else f"https://{self._ip}:{PORT}"
 
     def _aes_key(self, session_key: str) -> bytes:
         if session_key not in self._aes_cache:
@@ -446,6 +620,29 @@ class DashboardServer:
                 dead.add(ws)
         self._clients -= dead
 
+    async def send_phone_audio(self, data: bytes) -> int:
+        """Send Gemini PCM output to every active Remote Voice client.
+
+        This must be a DashboardServer method (not a local function inside
+        _build_app), because main.py calls self._dashboard.send_phone_audio().
+        Returns the number of browser clients that successfully received it.
+        """
+        if not data or not self._phone_audio_clients:
+            return 0
+
+        sent = 0
+        dead = []
+        for client in tuple(self._phone_audio_clients):
+            try:
+                await client.send_bytes(data)
+                sent += 1
+            except Exception:
+                dead.append(client)
+
+        for client in dead:
+            self._phone_audio_clients.discard(client)
+        return sent
+
     # ── FastAPI app ───────────────────────────────────────────────────────
 
     def _build_app(self) -> "FastAPI":
@@ -463,6 +660,51 @@ class DashboardServer:
                                     media_type="application/javascript")
             from fastapi.responses import RedirectResponse
             return RedirectResponse(_CRYPTOJS_CDN)
+
+        @app.get("/voice-ca.crt")
+        async def voice_ca():
+            path = BASE_DIR / "config" / "certs" / "jarvis-ca.crt"
+            if not path.exists():
+                return JSONResponse({"error": "Local voice CA not available"}, status_code=404)
+            return FileResponse(
+                str(path),
+                media_type="application/x-x509-ca-cert",
+                filename="jarvis-local-voice-ca.crt",
+            )
+
+        @app.get("/api/secure-health")
+        async def secure_health():
+            return JSONResponse({
+                "ok": bool(self._secure_ready),
+                "port": PORT,
+                "error": self._secure_error,
+                "url": f"https://{self._ip}:{PORT}",
+            })
+
+        @app.post("/api/secure-link")
+        async def secure_link(req: Request):
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            secure = self.get_secure_url()
+            if not secure:
+                detail = self._secure_error or (
+                    f"Secure JARVIS server is not listening on port {PORT} yet"
+                )
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "error": detail,
+                        "secure_ready": False,
+                        "port": PORT,
+                    },
+                    status_code=503,
+                )
+            key = self.new_key(expiry_secs=600)
+            return JSONResponse({
+                "ok": True,
+                "url": f"{secure}/auto-login?key={key}",
+                "base": secure,
+            })
 
         @app.get("/login", response_class=HTMLResponse)
         async def login_page():
@@ -486,16 +728,19 @@ class DashboardServer:
             if entered in self._pending_keys and self._pending_keys[entered] > now:
                 del self._pending_keys[entered]          # one-time use
                 tok = secrets.token_urlsafe(32)
+                dev_tok = secrets.token_urlsafe(32)
                 self._tokens.add(tok)
                 self._token_keys[tok] = entered
                 self._aes_key(entered)                   # pre-derive & cache
+                self._device_sessions[dev_tok] = {"session_key": entered}
                 if self._connect_callback:
                     self._connect_callback()
                 asyncio.create_task(self.broadcast(
                     {"type": "sys", "text": "Remote connection established."}
                 ))
-                # Bearer token in response body — no cookies needed (works on any browser/HTTP)
-                return JSONResponse({"ok": True, "token": tok})
+                # Return a persistent device token too, so the phone can move
+                # from HTTP bootstrap to the trusted local HTTPS voice origin.
+                return JSONResponse({"ok": True, "token": tok, "device_token": dev_tok})
             return JSONResponse({"ok": False, "error": "Invalid or expired key"},
                                 status_code=401)
 
@@ -613,21 +858,32 @@ class DashboardServer:
                 await websocket.close(code=4001)
                 return
             await websocket.accept()
+            self._phone_audio_clients.add(websocket)
             asyncio.create_task(self.broadcast(
                 {"type": "sys", "text": "Phone microphone live."}
             ))
+            chunk_count = 0
             try:
                 while True:
                     data = await websocket.receive_bytes()
+                    chunk_count += 1
                     try:
-                        self._phone_audio_queue.put_nowait(
-                            {"data": data, "mime_type": "audio/pcm"}
-                        )
+                        # Queue raw PCM bytes only. main.py wraps these exactly
+                        # once into Gemini's realtime audio payload.
+                        self._phone_audio_queue.put_nowait(data)
+                        if chunk_count == 1 or chunk_count % 40 == 0:
+                            asyncio.create_task(self.broadcast({
+                                "type": "voice_diag",
+                                "stage": "server_mic",
+                                "chunks": chunk_count,
+                                "bytes": len(data),
+                            }))
                     except asyncio.QueueFull:
                         pass  # drop frame rather than block
             except WebSocketDisconnect:
                 pass
             finally:
+                self._phone_audio_clients.discard(websocket)
                 asyncio.create_task(self.broadcast(
                     {"type": "sys", "text": "Phone microphone stopped."}
                 ))
@@ -750,24 +1006,111 @@ class DashboardServer:
 
         return app
 
+    # ── public tunnel ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _cloudflared_path() -> str | None:
+        """Return cloudflared executable, installing the Windows binary once if needed."""
+        found = shutil.which("cloudflared")
+        if found:
+            return found
+
+        # The desktop build is primarily used on Windows. Keep the helper local
+        # to the project so no PATH/admin changes are required.
+        if sys.platform != "win32":
+            return None
+
+        arch = platform.machine().lower()
+        asset = "cloudflared-windows-arm64.exe" if "arm" in arch else "cloudflared-windows-amd64.exe"
+        target_dir = BASE_DIR / "config" / "bin"
+        target = target_dir / "cloudflared.exe"
+        if target.exists():
+            return str(target)
+
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            url = f"https://github.com/cloudflare/cloudflared/releases/latest/download/{asset}"
+            tmp = target.with_suffix(".download")
+            print("[Dashboard] Installing Cloudflare Tunnel helper (one-time)...")
+            urllib.request.urlretrieve(url, str(tmp))
+            os.replace(tmp, target)
+            print(f"[Dashboard] cloudflared installed: {target}")
+            return str(target)
+        except Exception as e:
+            print(f"[Dashboard] cloudflared install failed: {e}")
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return None
+
+    async def _start_public_tunnel(self) -> None:
+        """Start a Cloudflare Quick Tunnel to the local dashboard.
+
+        Quick Tunnels require no account or port-forwarding and provide an HTTPS
+        URL suitable for phone microphone permissions and WebSockets.
+        """
+        loop = asyncio.get_running_loop()
+        exe = await loop.run_in_executor(None, self._cloudflared_path)
+        if not exe:
+            print("[Dashboard] Public tunnel unavailable: cloudflared not found.")
+            if sys.platform != "win32":
+                print("[Dashboard] Install cloudflared and restart JARVIS for internet Remote Access.")
+            return
+
+        local = f"http://127.0.0.1:{PORT}"
+        if self._ssl_enabled():
+            # cloudflared connects locally; self-signed TLS would otherwise fail
+            # certificate validation, so keep the origin HTTP-only expectation
+            # explicit rather than silently exposing a broken public URL.
+            local = f"https://127.0.0.1:{PORT}"
+
+        cmd = [exe, "tunnel", "--url", local, "--no-autoupdate"]
+        if self._ssl_enabled():
+            cmd += ["--no-tls-verify"]
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            self._tunnel_process = proc
+            pattern = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
+            assert proc.stdout is not None
+            while True:
+                raw = await proc.stdout.readline()
+                if not raw:
+                    break
+                line = raw.decode("utf-8", errors="replace").strip()
+                m = pattern.search(line)
+                if m and not self._public_url:
+                    self._public_url = m.group(0).rstrip("/")
+                    print(f"[Dashboard] Public Remote Access: {self._public_url}")
+            code = await proc.wait()
+            if self._public_url:
+                print(f"[Dashboard] Public tunnel stopped (exit {code}).")
+            else:
+                print(f"[Dashboard] Public tunnel failed to start (exit {code}).")
+        except asyncio.CancelledError:
+            if self._tunnel_process and self._tunnel_process.returncode is None:
+                self._tunnel_process.terminate()
+            raise
+        except Exception as e:
+            print(f"[Dashboard] Public tunnel error: {e}")
+
     # ── serve ─────────────────────────────────────────────────────────────
 
-    async def _serve_alias(self) -> None:
-        """Second HTTPS server on PORT+1 sharing the same app and in-memory state.
-        Chrome HTTPS-upgrades any bare IP:PORT the user types, so this port also needs TLS.
-        User types IP:8001 → Chrome tries https → self-signed cert warning → accept once → done."""
-        ssl_key  = BASE_DIR / "config" / "certs" / "jarvis.key"
-        ssl_cert = BASE_DIR / "config" / "certs" / "jarvis.crt"
-        asyncio.get_event_loop().run_in_executor(None, _ensure_network_access, PORT + 1)
-        cfg = uvicorn.Config(
-            self.app, host="0.0.0.0", port=PORT + 1, log_level="warning",
-            ssl_keyfile=str(ssl_key), ssl_certfile=str(ssl_cert),
-        )
-        print(f"[Dashboard] Manual entry:  {self._ip}:{PORT + 1}  (type in browser, accept cert once)")
-        await uvicorn.Server(cfg).serve()
-
     async def serve(self) -> None:
+        self._ready = False
+        self._secure_ready = False
+        self._serve_error = None
+        self._secure_error = None
+        self._startup_done = False
+
         if not _DEPS_OK:
+            self._serve_error = "fastapi/uvicorn not installed"
+            self._startup_done = True
             print("[Dashboard] fastapi/uvicorn not installed — dashboard disabled.")
             print("[Dashboard] Run:  pip install fastapi 'uvicorn[standard]' cryptography")
             return
@@ -776,19 +1119,96 @@ class DashboardServer:
         # no waiting for UAC dialogs or subprocess timeouts.
         asyncio.get_event_loop().run_in_executor(None, _ensure_network_access, PORT)
 
-        use_ssl  = self._ssl_enabled()
+        # One secure origin for everything: login, chat, files, WebSockets,
+        # and microphone audio all share HTTPS port 8000.
+        use_ssl = _ensure_local_tls(self._ip)
         ssl_key  = BASE_DIR / "config" / "certs" / "jarvis.key"
         ssl_cert = BASE_DIR / "config" / "certs" / "jarvis.crt"
-
-        if use_ssl:
-            asyncio.create_task(self._serve_alias())
+        if not use_ssl:
+            self._serve_error = "Could not generate local TLS certificate"
+            self._secure_error = self._serve_error
+            self._startup_done = True
+            return
 
         cfg = uvicorn.Config(
             self.app, host="0.0.0.0", port=PORT, log_level="warning",
-            **({"ssl_keyfile": str(ssl_key), "ssl_certfile": str(ssl_cert)} if use_ssl else {}),
+            lifespan="off",
+            loop="asyncio",
+            log_config=None,
+            access_log=False,
+            ssl_keyfile=str(ssl_key),
+            ssl_certfile=str(ssl_cert),
         )
+        server = uvicorn.Server(cfg)
+        server_task = asyncio.create_task(server.serve())
 
-        proto = "https" if use_ssl else "http"
-        print(f"[Dashboard] {proto}://{self._ip}:{PORT}")
-        print("[Dashboard] Press 'Remote Control' in JARVIS UI to get the QR code.")
-        await uvicorn.Server(cfg).serve()
+        # Do not claim Remote Access is available until Uvicorn has really bound
+        # the socket. Give startup a finite window so a stuck Uvicorn task becomes
+        # a useful diagnostic instead of an endless "not listening yet" state.
+        try:
+            deadline = asyncio.get_running_loop().time() + 8.0
+            while not server.started and not server_task.done():
+                if asyncio.get_running_loop().time() >= deadline:
+                    self._serve_error = (
+                        f"startup timed out after 8s; 127.0.0.1:{PORT} never opened"
+                    )
+                    self._startup_done = True
+                    print(f"[Dashboard] Startup failed: {self._serve_error}")
+                    server.should_exit = True
+                    try:
+                        await asyncio.wait_for(server_task, timeout=2.0)
+                    except Exception:
+                        server_task.cancel()
+                    return
+                await asyncio.sleep(0.05)
+
+            if server_task.done() and not server.started:
+                exc = server_task.exception()
+                self._serve_error = str(exc) if exc else f"could not bind port {PORT}"
+                self._startup_done = True
+                print(f"[Dashboard] Startup failed: {self._serve_error}")
+                return
+
+            # Uvicorn says it started; independently verify that localhost accepts
+            # TCP connections before exposing Remote Control to the UI.
+            connected = False
+            for _ in range(20):
+                try:
+                    reader, writer = await asyncio.open_connection("127.0.0.1", PORT)
+                    writer.close()
+                    await writer.wait_closed()
+                    connected = True
+                    break
+                except OSError:
+                    await asyncio.sleep(0.05)
+            if not connected:
+                self._serve_error = f"Uvicorn started but 127.0.0.1:{PORT} is unreachable"
+                self._startup_done = True
+                print(f"[Dashboard] Startup failed: {self._serve_error}")
+                server.should_exit = True
+                return
+
+            self._ready = True
+            self._secure_ready = True
+            self._secure_error = None
+            self._startup_done = True
+            print(f"[Dashboard] Local check: https://127.0.0.1:{PORT}")
+            print(f"[Dashboard] LAN:         https://{self._ip}:{PORT}")
+            print(f"[Dashboard] Chat + Voice: same secure port {PORT}")
+            print("[Dashboard] Press 'Remote Control' in JARVIS UI to get the QR code.")
+
+            # Internet access starts only after the local origin is confirmed live.
+            # Public internet tunnel temporarily disabled.
+            # Localhost/LAN Remote Access remains enabled.
+            # asyncio.create_task(self._start_public_tunnel())
+            await server_task
+        except asyncio.CancelledError:
+            server.should_exit = True
+            raise
+        except Exception as e:
+            self._serve_error = str(e)
+            self._startup_done = True
+            print(f"[Dashboard] Server error: {e}")
+        finally:
+            self._ready = False
+

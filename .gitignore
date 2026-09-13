@@ -48,3 +48,6 @@ desktop.ini
 logs/
 downloads/
 screenshots/
+
+# Auto-downloaded Remote Access tunnel helper
+config/bin/cloudflared.exe
