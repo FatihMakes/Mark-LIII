@@ -94,7 +94,7 @@ API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
 LIVE_MODEL          = "models/gemini-3.1-flash-live-preview"
 CHANNELS            = 1
-SEND_SAMPLE_RATE    = 16000 
+SEND_SAMPLE_RATE    = 16000
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE          = 1024
 
@@ -137,7 +137,7 @@ def _load_system_prompt() -> str:
 
 _CTRL_RE = re.compile(r"<ctrl\d+>", re.IGNORECASE)
 
-def _clean_transcript(text: str) -> str:    
+def _clean_transcript(text: str) -> str:
     text = _CTRL_RE.sub("", text)
     text = re.sub(r"[\x00-\x08\x0b-\x1f]", "", text)
     return text.strip()
@@ -356,6 +356,7 @@ class JarvisLive:
         self.session              = None
         self.audio_in_queue       = None
         self.out_queue            = None
+        self._remote_audio_out_queue   = None
         self._loop                     = None
         self._is_speaking         = False
         self._speaking_lock       = threading.Lock()
@@ -391,6 +392,8 @@ class JarvisLive:
         self._resume_handle: str | None = None
         self._turn_done_event: asyncio.Event | None = None
         self._dashboard     = None
+        self._dashboard_task = None
+        self._self_healer    = None
         self._briefing_sent    = False          # morning briefing fires once per process
         self._sys_monitor      = SystemMonitor()  # persistent cooldown state
         self._proactive        = ProactiveEngine()
@@ -400,6 +403,18 @@ class JarvisLive:
         self._enhanced_live = True  # proactive audio; auto-disabled if the server rejects it
 
         _base_dir = Path(__file__).resolve().parent
+
+        # Guarded Self-Healing Engine: exact whitelisted repairs only.
+        # Source edits are backed up, syntax-checked, and rolled back on failure.
+        try:
+            from core.self_healing import SelfHealingEngine
+            self._self_healer = SelfHealingEngine(_base_dir)
+            repaired = self._self_healer.repair_known_source_regressions()
+            for item in repaired:
+                self.ui.write_log(f"SYS: Self-Healing repaired: {item}.")
+        except Exception as e:
+            print(f"[Self-Healing] unavailable: {e}")
+
         _inline_names = {t["name"] for t in TOOL_DECLARATIONS}
 
         # File-backed tools: every actions/*.py with a TOOL dict, discovered the
@@ -601,6 +616,23 @@ class JarvisLive:
             self.ui.write_log(
                 "SYS: Dashboard unavailable. "
                 "Run: pip install fastapi \"uvicorn[standard]\" cryptography"
+            )
+            return None
+        if not self._dashboard.is_ready():
+            err = self._dashboard.serve_error()
+            self.ui.write_log(
+                "SYS: Dashboard server is not listening on port 8000"
+                + (f" — {err}" if err else " yet. Check the console and try again.")
+            )
+            return None
+        if self._self_healer:
+            repaired = self._self_healer.heal_dashboard_runtime(self._dashboard)
+            for item in repaired:
+                self.ui.write_log(f"SYS: Self-Healing repaired: {item}.")
+        if self._dashboard.public_enabled() and not self._dashboard.public_ready():
+            self.ui.write_log(
+                "SYS: Local dashboard is ready, but the public tunnel is still connecting. "
+                "Try REMOTE CONTROL again shortly."
             )
             return None
         key    = self._dashboard.new_key()
@@ -1026,6 +1058,26 @@ class JarvisLive:
                             _SLICE = 2400
                             for _i in range(0, len(_audio_data), _SLICE):
                                 self.audio_in_queue.put_nowait(_audio_data[_i : _i + _SLICE])
+                            # Remote audio is serialized through one sender task.
+                            # Do not spawn overlapping WebSocket send_bytes() calls for
+                            # consecutive Gemini chunks; that can reorder/drop audio on
+                            # mobile browsers while the text transcript still arrives.
+                            if self._dashboard and self._dashboard._phone_audio_clients:
+                                q = self._remote_audio_out_queue
+                                if q is not None:
+                                    try:
+                                        q.put_nowait(bytes(_audio_data))
+                                    except asyncio.QueueFull:
+                                        # Preserve newest speech instead of stalling the
+                                        # Gemini receive loop behind a slow phone client.
+                                        try:
+                                            q.get_nowait()
+                                        except asyncio.QueueEmpty:
+                                            pass
+                                        try:
+                                            q.put_nowait(bytes(_audio_data))
+                                        except asyncio.QueueFull:
+                                            pass
 
                     if response.server_content:
                         sc = response.server_content
@@ -1461,6 +1513,32 @@ class JarvisLive:
 
     # ── Phone audio relay ────────────────────────────────────────────────────────
 
+    async def _relay_remote_response_audio(self) -> None:
+        """Serialize Gemini PCM output to Remote Voice clients.
+
+        Starlette WebSocket writes must not be allowed to pile up as independent
+        tasks. One sender preserves chunk order and naturally applies backpressure.
+        """
+        q = self._remote_audio_out_queue
+        if q is None:
+            return
+        while True:
+            pcm = await q.get()
+            if not pcm or not self._dashboard:
+                continue
+            try:
+                sent = await self._dashboard.send_phone_audio(pcm)
+                await self._dashboard.broadcast({
+                    "type": "voice_diag",
+                    "stage": "response_audio",
+                    "bytes": len(pcm),
+                    "clients": sent,
+                })
+            except Exception as e:
+                # A transient phone socket failure must never tear down the
+                # Gemini Live session or desktop audio path.
+                print(f"[PhoneVoice] Remote response send failed: {e}")
+
     async def _relay_phone_audio(self) -> None:
         """Forward phone mic PCM chunks from dashboard queue into the Gemini Live session."""
         q = self._dashboard._phone_audio_queue
@@ -1472,13 +1550,49 @@ class JarvisLive:
                 self._phone_active = False
                 continue
             self._phone_active = True   # phone is streaming — silence PC mic
-            with self._speaking_lock:
-                speaking = self._is_speaking
-            if not speaking and not self.ui.muted:
-                try:
-                    self.out_queue.put_nowait(chunk)
-                except asyncio.QueueFull:
-                    pass
+
+            # Remote Voice is its own input surface. Desktop mute must not block
+            # the phone microphone, and opening Remote Voice should wake JARVIS
+            # even when local wake-word mode has put the desktop mic to sleep.
+            if self._wake_enabled and not self._awake:
+                self.wake(reason="remote voice")
+
+            # Do NOT drop phone audio while JARVIS is speaking. Remote Voice is
+            # intended to be interactive/full-duplex; Gemini Live can use the
+            # incoming audio for barge-in instead of silently losing the user's
+            # words during playback.
+            try:
+                # Accept raw bytes (v15) and gracefully unwrap an older
+                # dashboard payload shape if a stale component sends it.
+                if isinstance(chunk, dict):
+                    data = chunk.get("data", b"")
+                else:
+                    data = chunk
+                if not isinstance(data, (bytes, bytearray, memoryview)):
+                    print(f"[PhoneVoice] Dropped invalid audio payload: {type(data).__name__}")
+                    continue
+                data = bytes(data)
+                if not data:
+                    continue
+
+                # Match the desktop mic's known-good Gemini Live path exactly.
+                self.out_queue.put_nowait({
+                    "data": data,
+                    "mime_type": "audio/pcm",
+                })
+
+                # Low-frequency diagnostic for the remote UI; no chat spam.
+                self._phone_diag_chunks = getattr(self, "_phone_diag_chunks", 0) + 1
+                if self._phone_diag_chunks == 1 or self._phone_diag_chunks % 40 == 0:
+                    if self._dashboard:
+                        asyncio.create_task(self._dashboard.broadcast({
+                            "type": "voice_diag",
+                            "stage": "gemini_input",
+                            "chunks": self._phone_diag_chunks,
+                            "bytes": len(data),
+                        }))
+            except asyncio.QueueFull:
+                pass
 
     def _on_phone_connected(self) -> None:
         self.ui.write_log("SYS: Phone connected via Remote Dashboard.")
@@ -1548,7 +1662,41 @@ class JarvisLive:
             from dashboard.server import DashboardServer
             self._dashboard = DashboardServer()
             self._dashboard.set_connect_callback(self._on_phone_connected)
-            asyncio.create_task(self._dashboard.serve())
+            if self._self_healer:
+                repaired = self._self_healer.heal_dashboard_runtime(self._dashboard)
+                for item in repaired:
+                    self.ui.write_log(f"SYS: Self-Healing repaired: {item}.")
+            self._dashboard_task = asyncio.create_task(self._dashboard.serve())
+
+            # Dashboard startup is part of JARVIS startup, not a fire-and-forget
+            # side task. Wait until it has either opened localhost:8000 or
+            # produced a concrete error before moving on to the Gemini session.
+            # This removes the race where REMOTE CONTROL could remain stuck at
+            # "not listening yet" while the main connection work took over.
+            deadline = asyncio.get_running_loop().time() + 12.0
+            while not self._dashboard.startup_done():
+                if self._dashboard_task.done():
+                    try:
+                        exc = self._dashboard_task.exception()
+                    except asyncio.CancelledError:
+                        exc = RuntimeError("dashboard startup task was cancelled")
+                    if exc and not self._dashboard.serve_error():
+                        self._dashboard._serve_error = str(exc)
+                    break
+                if asyncio.get_running_loop().time() >= deadline:
+                    if not self._dashboard.serve_error():
+                        self._dashboard._serve_error = "dashboard startup wait timed out after 12s"
+                    break
+                await asyncio.sleep(0.05)
+
+            if self._dashboard.is_ready():
+                print("[Dashboard] Startup confirmed by JARVIS.")
+                self.ui.write_log("SYS: Remote dashboard ready on 127.0.0.1:8000.")
+            else:
+                err = self._dashboard.serve_error() or "unknown dashboard startup failure"
+                print(f"[Dashboard] Startup unavailable: {err}")
+                self.ui.write_log(f"SYS: Dashboard startup failed — {err}")
+
             # Runs for the whole lifetime, not just inside an active session
             asyncio.create_task(self._process_dashboard_commands())
         except Exception as e:
@@ -1577,7 +1725,9 @@ class JarvisLive:
                     self.session          = session
                     self.audio_in_queue   = asyncio.Queue()
                     self.out_queue        = asyncio.Queue(maxsize=200)
+                    self._remote_audio_out_queue = asyncio.Queue(maxsize=120)
                     self._turn_done_event = asyncio.Event()
+                    self._phone_diag_chunks = 0
 
                     # Reset transient state that must not carry over from a previous session
                     self._pending_vision       = None
@@ -1621,6 +1771,7 @@ class JarvisLive:
                     tg.create_task(self._run_sleep_watch())
                     if self._dashboard:
                         tg.create_task(self._relay_phone_audio())
+                        tg.create_task(self._relay_remote_response_audio())
 
                     # Morning briefing — fires once per process launch (if enabled).
                     # Skipped in wake-word mode: it comes up asleep, and a briefing

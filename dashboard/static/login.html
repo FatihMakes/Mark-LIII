@@ -2,223 +2,104 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>JARVIS</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>JARVIS Remote</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    :root {
-      --bg:     #07090f;
-      --card:   rgba(255,255,255,0.04);
-      --border: rgba(255,255,255,0.08);
-      --accent: #6366f1;
-      --adim:   rgba(99,102,241,0.15);
-      --text:   #dde3ed;
-      --muted:  #5e6a7e;
-    }
-    html, body {
-      height: 100%;
-      background: var(--bg);
-      color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-    }
-    .card {
-      width: 340px;
-      padding: 44px 36px;
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 22px;
-      text-align: center;
-    }
-    .logo {
-      font-size: 28px;
-      font-weight: 700;
-      letter-spacing: 10px;
-      margin-bottom: 6px;
-    }
-    .logo em { color: var(--accent); font-style: normal; }
-    .sub {
-      font-size: 11px;
-      color: var(--muted);
-      letter-spacing: 3px;
-      text-transform: uppercase;
-      margin-bottom: 10px;
-    }
-    .hint {
-      font-size: 12px;
-      color: var(--muted);
-      line-height: 1.55;
-      margin-bottom: 28px;
-    }
-    .key-wrap {
-      position: relative;
-      margin-bottom: 16px;
-    }
-    .key-input {
-      width: 100%;
-      padding: 18px 14px;
-      background: rgba(255,255,255,0.05);
-      border: 1.5px solid var(--border);
-      border-radius: 14px;
-      color: var(--text);
-      font-size: 30px;
-      font-weight: 700;
-      font-family: 'Courier New', monospace;
-      text-align: center;
-      letter-spacing: 10px;
-      text-transform: uppercase;
-      outline: none;
-      transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
-      caret-color: var(--accent);
-    }
-    .key-input::placeholder {
-      color: rgba(94,106,126,0.5);
-      letter-spacing: 6px;
-      font-size: 20px;
-    }
-    .key-input:focus {
-      border-color: var(--accent);
-      background: var(--adim);
-      box-shadow: 0 0 0 3px rgba(99,102,241,0.12);
-    }
-    .err {
-      font-size: 12px;
-      color: #f87171;
-      min-height: 18px;
-      margin-bottom: 14px;
-    }
-    .btn {
-      width: 100%;
-      padding: 14px;
-      background: var(--accent);
-      color: #fff;
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 3px;
-      border: none;
-      border-radius: 12px;
-      cursor: pointer;
-      transition: opacity 0.15s, transform 0.1s;
-    }
-    .btn:hover  { opacity: 0.88; }
-    .btn:active { transform: scale(0.98); }
-    @keyframes shake {
-      0%,100% { transform: translateX(0); }
-      20%,60% { transform: translateX(-7px); }
-      40%,80% { transform: translateX(7px); }
-    }
-    .shake { animation: shake 0.35s ease; }
-    .voice-note {
-      font-size: 10px;
-      color: var(--muted);
-      margin-top: 20px;
-      line-height: 1.6;
-      text-align: left;
-    }
-    .voice-note code {
-      background: rgba(255,255,255,0.07);
-      padding: 1px 4px;
-      border-radius: 3px;
-      font-family: 'Courier New', monospace;
-      font-size: 9px;
-    }
-    #reconnecting {
-      display: none;
-      color: var(--muted);
-      font-size: 12px;
-      margin-bottom: 16px;
-    }
+    *{box-sizing:border-box} html,body{margin:0;min-height:100%;font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#fff;color:#202123}
+    body{display:flex;min-height:100vh;align-items:center;justify-content:center;padding:24px}
+    .shell{width:min(100%,440px);text-align:center}
+    .mark{width:54px;height:54px;margin:0 auto 22px;border-radius:50%;display:grid;place-items:center;background:#111;color:#fff;font-weight:700;font-size:22px;letter-spacing:-.5px}
+    h1{font-size:30px;line-height:1.15;margin:0 0 10px;font-weight:650;letter-spacing:-.7px}
+    .sub{font-size:15px;line-height:1.55;color:#6b6f76;margin:0 auto 30px;max-width:360px}
+    .card{width:100%;text-align:left}
+    label{display:block;font-size:13px;font-weight:600;margin-bottom:8px}
+    .key{width:100%;height:56px;border:1px solid #d9d9dc;border-radius:14px;padding:0 16px;font-size:21px;letter-spacing:8px;text-align:center;text-transform:uppercase;outline:none;transition:.15s}
+    .key:focus{border-color:#111;box-shadow:0 0 0 1px #111}
+    .key::placeholder{letter-spacing:3px;color:#b7b9bd;font-size:15px}
+    .btn{width:100%;height:52px;border:0;border-radius:14px;background:#111;color:#fff;font-size:15px;font-weight:600;cursor:pointer;margin-top:14px}
+    .btn:active{transform:scale(.99)}
+    .err{height:22px;font-size:13px;color:#d93025;margin-top:9px;text-align:center}
+    .divider{display:flex;align-items:center;gap:12px;color:#a0a4aa;font-size:12px;margin:22px 0}
+    .divider:before,.divider:after{content:"";height:1px;background:#ececef;flex:1}
+    .note{font-size:12px;line-height:1.55;color:#7c8087;text-align:center}
+    .secure{margin-top:16px;padding:12px 14px;border-radius:12px;background:#f7f7f8;color:#656970;font-size:12px;line-height:1.5}
+    #reconnecting{display:none;margin:0 0 18px;color:#6b6f76;font-size:13px}
+    .shake{animation:shake .34s ease}@keyframes shake{20%,60%{transform:translateX(-6px)}40%,80%{transform:translateX(6px)}}
+    @media(max-width:480px){body{align-items:flex-start;padding-top:15vh}.shell{width:100%}h1{font-size:28px}}
   </style>
 </head>
 <body>
-  <div class="card" id="card">
-    <div class="logo"><em>J</em>ARVIS</div>
-    <div class="sub">Remote Access</div>
-    <p id="reconnecting">Reconnecting…</p>
-    <p class="hint">Press <strong style="color:var(--text)">Remote Control</strong> in the JARVIS desktop app to get a QR code or session key.</p>
-    <div class="key-wrap">
-      <input class="key-input" id="key" type="text" maxlength="6"
-             autocomplete="off" autocorrect="off" spellcheck="false"
-             placeholder="· · · · · ·">
-    </div>
-    <div class="err" id="err"></div>
-    <button class="btn" onclick="doLogin()">CONNECT</button>
-    <p class="voice-note">
-      🎤 <strong style="color:var(--text)">Voice commands:</strong> open
-      <code>chrome://flags</code> on your phone, search
-      <code>Insecure origins treated as secure</code>, add your JARVIS URL, tap Relaunch.
-    </p>
-  </div>
+  <main class="shell" id="card">
+    <div class="mark">J</div>
+    <h1>Connect to JARVIS</h1>
+    <p class="sub">Enter the six-character session key shown in Remote Control on your computer.</p>
+    <p id="reconnecting">Reconnecting to your paired device…</p>
 
-  <script>
-    // Try auto-reconnect with stored device token (set on first QR login)
-    (async function() {
-      const devTok = localStorage.getItem('jarvis_device_token');
-      if (!devTok) return;
-      document.getElementById('reconnecting').style.display = 'block';
-      try {
-        const r = await fetch('/api/device-login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ device_token: devTok }),
-        });
-        const d = await r.json();
-        if (d.ok && d.token) {
-          sessionStorage.setItem('jarvis_key', d.key);
-          sessionStorage.setItem('jarvis_token', d.token);
-          location.replace('/');
-          return;
-        }
-      } catch (_) {}
-      // Device token rejected (server restarted) — clear it and show normal form
-      localStorage.removeItem('jarvis_device_token');
-      document.getElementById('reconnecting').style.display = 'none';
-    })();
+    <section class="card">
+      <label for="key">Session key</label>
+      <input id="key" class="key" type="text" maxlength="6" autocomplete="one-time-code"
+             autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="ABC123">
+      <button class="btn" onclick="doLogin()">Continue</button>
+      <div class="err" id="err"></div>
+    </section>
 
-    const inp = document.getElementById('key');
-    inp.focus();
+    <div class="divider">JARVIS Remote</div>
+    <p class="note">Your session stays on your local network. Public internet access is disabled.</p>
+    <div class="secure">Chat and Voice use the same secure local HTTPS connection on port 8000. The dashboard will guide you through a one-time certificate setup on this phone.</div>
+  </main>
 
-    inp.addEventListener('input', () => {
-      inp.value = inp.value.toUpperCase().replace(/[^A-Z2-9]/g, '');
-      if (inp.value.length === 6) doLogin();
+<script>
+(async function() {
+  const devTok = localStorage.getItem('jarvis_device_token');
+  if (!devTok) return;
+  document.getElementById('reconnecting').style.display = 'block';
+  try {
+    const r = await fetch('/api/device-login', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({device_token:devTok})
     });
-    inp.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
-
-    async function doLogin() {
-      const key = inp.value.trim();
-      if (key.length < 6) { shake(); return; }
-      let data;
-      try {
-        const r = await fetch('/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pin: key })
-        });
-        data = await r.json();
-      } catch (e) {
-        document.getElementById('err').textContent = 'Connection error';
-        shake(); return;
-      }
-      if (data.ok && data.token) {
-        sessionStorage.setItem('jarvis_key', key);
-        sessionStorage.setItem('jarvis_token', data.token);
-        location.href = '/';
-      } else {
-        inp.value = '';
-        inp.focus();
-        document.getElementById('err').textContent = 'Invalid or expired key';
-        shake();
-      }
+    const d = await r.json();
+    if (d.ok && d.token) {
+      sessionStorage.setItem('jarvis_key', d.key);
+      sessionStorage.setItem('jarvis_token', d.token);
+      location.replace('/');
+      return;
     }
+  } catch (_) {}
+  localStorage.removeItem('jarvis_device_token');
+  document.getElementById('reconnecting').style.display = 'none';
+})();
 
-    function shake() {
-      const c = document.getElementById('card');
-      c.classList.remove('shake');
-      void c.offsetWidth;
-      c.classList.add('shake');
+const inp=document.getElementById('key');
+inp.focus();
+inp.addEventListener('input',()=>{
+  inp.value=inp.value.toUpperCase().replace(/[^A-Z2-9]/g,'');
+  if(inp.value.length===6) doLogin();
+});
+inp.addEventListener('keydown',e=>{if(e.key==='Enter')doLogin()});
+
+async function doLogin(){
+  const key=inp.value.trim();
+  if(key.length<6){shake();return}
+  const err=document.getElementById('err');
+  err.textContent='';
+  try{
+    const r=await fetch('/login',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({pin:key})
+    });
+    const d=await r.json();
+    if(d.ok&&d.token){
+      sessionStorage.setItem('jarvis_key',key);
+      sessionStorage.setItem('jarvis_token',d.token);
+      if(d.device_token) localStorage.setItem('jarvis_device_token',d.device_token);
+      location.href='/';
+      return;
     }
-  </script>
+    inp.value='';inp.focus();err.textContent='Invalid or expired session key';shake();
+  }catch(e){err.textContent='Could not reach JARVIS';shake()}
+}
+function shake(){const c=document.getElementById('card');c.classList.remove('shake');void c.offsetWidth;c.classList.add('shake')}
+</script>
 </body>
 </html>

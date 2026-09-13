@@ -1,5 +1,6 @@
 # ── Core: UI, audio, Gemini Live ──────────────────────────────────────────────
 PyQt6
+PyQt6-WebEngine
 sounddevice
 numpy
 google-genai>=2.8.0
@@ -24,6 +25,7 @@ mss
 psutil
 send2trash
 youtube-transcript-api
+yt-dlp
 python-pptx
 openpyxl
 

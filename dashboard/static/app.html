@@ -121,6 +121,109 @@
     #mic-btn.unsupported { opacity: 0.3; cursor: not-allowed; }
     @keyframes mic-pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.65;transform:scale(0.97)} }
 
+
+    /* ── SIMPLE VOICE MODE ── */
+    #voice-mode {
+      position: fixed; inset: 0; z-index: 5000; display: none;
+      background:
+        radial-gradient(circle at 50% 42%, rgba(103,126,255,0.10), transparent 34%),
+        #f7f8fb;
+      color: #15171b;
+      font-family: inherit;
+    }
+    #voice-mode.open { display: flex; flex-direction: column; }
+    .voice-top {
+      height: 78px; display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 18px; flex: 0 0 auto;
+    }
+    .voice-circle-btn {
+      width: 50px; height: 50px; border-radius: 50%; border: 0;
+      background: rgba(255,255,255,0.88); color: #17191d;
+      display: grid; place-items: center; font-size: 23px; cursor: pointer;
+      box-shadow: 0 4px 22px rgba(20,24,35,0.06);
+      -webkit-tap-highlight-color: transparent;
+    }
+    .voice-brand {
+      font-size: 12px; font-weight: 750; letter-spacing: 2.8px; color: #6f7480;
+    }
+    .voice-stage {
+      flex: 1; display: flex; flex-direction: column; align-items: center;
+      justify-content: center; padding: 20px; min-height: 0;
+    }
+    #voice-orb {
+      width: min(56vw, 270px); aspect-ratio: 1; border-radius: 50%;
+      border: 0; cursor: pointer; position: relative; overflow: hidden;
+      background:
+        radial-gradient(circle at 53% 36%, rgba(255,255,255,0.96) 0 8%, rgba(255,255,255,0.50) 18%, transparent 38%),
+        radial-gradient(circle at 24% 62%, rgba(205,213,255,0.98), transparent 55%),
+        radial-gradient(circle at 72% 68%, rgba(228,233,255,0.98), transparent 52%),
+        linear-gradient(155deg, #657cff 4%, #b7c2ff 50%, #eef1ff 100%);
+      box-shadow: 0 24px 80px rgba(88,108,220,0.22);
+      transition: transform .24s ease, box-shadow .24s ease, filter .24s ease;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #voice-orb::after {
+      content:""; position:absolute; inset:-18%; border-radius:50%;
+      background: radial-gradient(circle, rgba(255,255,255,.32), transparent 58%);
+      animation: voice-drift 5.5s ease-in-out infinite alternate;
+    }
+    #voice-orb.listening { animation: voice-breathe 2.3s ease-in-out infinite; }
+    #voice-orb.thinking  { animation: voice-think 1.1s ease-in-out infinite; filter:saturate(.9); }
+    #voice-orb.speaking  { animation: voice-speak .76s ease-in-out infinite alternate; }
+    #voice-orb.muted     { filter: grayscale(.65) opacity(.66); animation:none; }
+    @keyframes voice-drift {
+      from { transform: translate(-8%,-3%) scale(.92); }
+      to   { transform: translate(10%,8%) scale(1.10); }
+    }
+    @keyframes voice-breathe {
+      0%,100% { transform:scale(.985); box-shadow:0 22px 72px rgba(88,108,220,.20); }
+      50%     { transform:scale(1.025); box-shadow:0 28px 94px rgba(88,108,220,.30); }
+    }
+    @keyframes voice-think {
+      0%,100% { transform:scale(.985) rotate(-1deg); }
+      50%     { transform:scale(1.018) rotate(1deg); }
+    }
+    @keyframes voice-speak {
+      from { transform:scale(1.00); box-shadow:0 24px 80px rgba(88,108,220,.24); }
+      to   { transform:scale(1.045); box-shadow:0 30px 110px rgba(88,108,220,.36); }
+    }
+    #voice-state {
+      margin-top: 30px; font-size: 15px; font-weight: 650; letter-spacing: .2px;
+      color: #6a6f79; min-height: 22px; text-align: center;
+    }
+    #voice-caption {
+      margin-top: 9px; width: min(84vw, 560px); min-height: 24px;
+      text-align: center; font-size: 13px; line-height: 1.45; color: #8a8f98;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #voice-diag {
+      margin-top: 12px; width:min(88vw,620px); padding:9px 11px; border-radius:14px;
+      background:rgba(17,19,24,.05); color:#747983; font-size:11px; line-height:16px;
+      display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:5px 10px;
+      text-align:left;
+    }
+    .voice-diag-item { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .voice-diag-item.ok { color:#15803d; }
+    .voice-diag-item.warn { color:#b45309; }
+    .voice-bottom {
+      min-height: 110px; padding: 14px 22px 24px;
+      display: flex; align-items: center; justify-content: center; gap: 18px;
+      flex: 0 0 auto;
+    }
+    .voice-action {
+      width: 60px; height: 60px; border-radius: 50%; border: 0;
+      font-size: 24px; cursor: pointer; display:grid; place-items:center;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #voice-mute { background:#fff; color:#15171b; box-shadow:0 4px 22px rgba(20,24,35,.07); }
+    #voice-mute.on { background:#eceef3; color:#868b95; }
+    #voice-close { background:#111318; color:#fff; font-size:27px; }
+    @media (max-width: 520px) {
+      #voice-orb { width: 58vw; }
+      .voice-top { height: 72px; }
+      .voice-bottom { min-height: 104px; }
+    }
+
     /* ── TOAST ── */
     #toast {
       position:fixed; top:66px; left:50%; transform:translateX(-50%) translateY(-8px);
@@ -131,7 +234,96 @@
       pointer-events:none; white-space:nowrap;
     }
     #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
-  </style>
+
+    /* ── v10 CLEAN REMOTE UI ── */
+    :root{
+      --bg:#ffffff; --surface:#f7f7f8; --border:#e5e5e5; --accent:#111111;
+      --adim:#f4f4f4; --text:#202123; --muted:#71717a; --green:#16a34a; --gdim:#f0fdf4;
+    }
+    html,body{background:#fff;color:var(--text);font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    header{
+      min-height:58px;padding:10px 16px;background:rgba(255,255,255,.94);
+      border-bottom:1px solid #f0f0f0;backdrop-filter:blur(14px);gap:10px;
+    }
+    .logo{font-size:16px;font-weight:650;letter-spacing:-.15px}.logo em{color:#111}
+    .url,.enc-badge{display:none!important}
+    .pill{margin-left:auto;background:#f7f7f8;border:0;color:#6b7280;letter-spacing:.2px;text-transform:none;font-size:12px;font-weight:550;padding:6px 10px}
+    .pill.on{background:#f0fdf4;border:0;color:#15803d}
+    .dot{width:7px;height:7px}
+    main{
+      width:100%;max-width:780px;margin:0 auto;padding:28px 18px 34px;gap:22px;
+      background:#fff;
+    }
+    main:empty:before{
+      content:"How can I help you?";display:block;margin:auto;color:#202123;
+      font-size:28px;font-weight:600;letter-spacing:-.6px;text-align:center;
+      padding-top:26vh;
+    }
+    .msg{font-size:15px;line-height:1.62;animation:pop .15s ease}
+    .msg-j{
+      align-self:stretch;max-width:100%;background:transparent;border:0;border-radius:0;
+      padding:4px 2px;color:#202123;
+    }
+    .msg-u{
+      align-self:flex-end;max-width:82%;background:#f4f4f4;border:0;border-radius:22px;
+      padding:10px 15px;color:#202123;
+    }
+    .msg-sys{font-size:11px;color:#9a9aa0;padding:2px 0}
+    .lbl{font-size:11px;letter-spacing:0;text-transform:none;opacity:1;margin-bottom:6px;font-weight:650;color:#777!important}
+    .msg-j .lbl:before{content:"● ";color:#111}.msg-u .lbl{display:none}
+    .msg-file{background:#f7f7f8;border:0;border-radius:18px;max-width:82%}
+    footer{
+      width:min(calc(100% - 24px),760px);margin:0 auto 14px;padding:7px 8px;
+      border:1px solid #dedede;border-radius:27px;background:#fff;gap:5px;
+      box-shadow:0 8px 26px rgba(0,0,0,.06);
+    }
+    #inp{height:42px;padding:0 10px;background:transparent;border:0;color:#202123;font-size:15px;box-shadow:none!important}
+    #inp::placeholder{color:#9a9aa0}
+    .btn-attach,#mic-btn{
+      width:40px;height:40px;padding:0;border:0;border-radius:50%;background:transparent;
+      color:#303030;font-size:19px;
+    }
+    .btn-attach:hover,#mic-btn:hover{background:#f4f4f4;border:0;color:#111}
+    .btn-send{
+      width:40px;height:40px;padding:0;border-radius:50%;background:#111;color:#fff;
+      letter-spacing:0;position:relative;flex:0 0 40px;display:grid;place-items:center;
+    }
+    .btn-wake{height:40px;border-radius:20px;border:0;background:#f4f4f4;color:#555;letter-spacing:0;font-size:11px}
+    #toast{top:70px;background:#111;color:#fff;border:0;font-size:12px;letter-spacing:0;padding:8px 14px}
+    @media(max-width:620px){
+      main{padding:18px 14px 26px}.msg-u{max-width:88%}
+      footer{width:calc(100% - 16px);margin-bottom:max(8px,env(safe-area-inset-bottom))}
+      header{padding-left:14px;padding-right:14px}
+    }
+
+
+    .icon-btn svg{
+      width:21px;height:21px;display:block;fill:none;stroke:currentColor;
+      stroke-width:2;stroke-linecap:round;stroke-linejoin:round;pointer-events:none;
+    }
+    .btn-send.icon-btn svg{width:20px;height:20px;stroke-width:2.2}
+    .voice-action.icon-btn svg,.voice-circle-btn.icon-btn svg{width:24px;height:24px}
+    #voice-close.icon-btn svg{width:25px;height:25px}
+
+    /* secure voice setup */
+    #voice-secure-setup{position:fixed;inset:0;z-index:7000;display:none;align-items:flex-end;justify-content:center;background:rgba(0,0,0,.28);padding:18px}
+    #voice-secure-setup.open{display:flex}
+    .secure-sheet{width:min(100%,500px);background:#fff;border-radius:24px;padding:24px;color:#202123;box-shadow:0 24px 80px rgba(0,0,0,.18)}
+    .secure-sheet h2{font-size:21px;letter-spacing:-.35px;margin:0 0 8px}
+    .secure-sheet p{font-size:14px;line-height:1.55;color:#656970;margin:0 0 18px}
+    .secure-steps{display:grid;gap:10px;margin:14px 0 20px}
+    .secure-step{display:flex;gap:12px;align-items:flex-start;padding:11px 12px;background:#f7f7f8;border-radius:14px;font-size:13px;line-height:1.45}
+    .step-n{width:24px;height:24px;border-radius:50%;background:#111;color:#fff;display:grid;place-items:center;flex:0 0 24px;font-size:12px}
+    .secure-actions{display:grid;gap:9px}
+    .secure-primary,.secure-secondary{height:48px;border-radius:14px;border:0;font-size:14px;font-weight:600;cursor:pointer}
+    .secure-primary{background:#111;color:#fff}.secure-secondary{background:#f3f3f4;color:#202123}
+    .secure-close{float:right;width:34px;height:34px;border:0;border-radius:50%;background:#f4f4f4;font-size:20px;cursor:pointer}
+    .secure-error{min-height:18px;color:#c62828;font-size:12px;text-align:center;margin-top:10px}
+
+
+    /* v16: voice transport diagnostics remain internal but are hidden from the user UI */
+    #voice-diag { display:none !important; }
+</style>
 </head>
 <body>
   <div id="toast"></div>
@@ -144,13 +336,56 @@
   </header>
   <main id="feed"></main>
   <footer>
-    <input id="inp" placeholder="Send a command to JARVIS…" autocomplete="off">
-    <label class="btn-attach" for="file-inp" title="Send file">📎</label>
+    <input id="inp" placeholder="Message JARVIS" autocomplete="off">
+    <label class="btn-attach icon-btn" for="file-inp" title="Attach file" aria-label="Attach file"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></label>
     <input type="file" id="file-inp" multiple accept="*/*" style="display:none">
-    <button id="mic-btn" onclick="doMic()" title="Voice command">🎤</button>
+    <button id="mic-btn" class="icon-btn" onclick="openVoiceMode()" title="Voice" aria-label="Voice"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6"/></svg></button>
     <button class="btn btn-wake" id="wake" onclick="doWake()">WAKE</button>
-    <button class="btn btn-send" onclick="doSend()">SEND</button>
+    <button class="btn btn-send icon-btn" onclick="doSend()" title="Send" aria-label="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/></svg></button>
   </footer>
+
+
+
+  <section id="voice-secure-setup" aria-hidden="true">
+    <div class="secure-sheet">
+      <button class="secure-close" onclick="closeSecureVoiceSetup()" aria-label="Close">×</button>
+      <h2>Enable voice on this phone</h2>
+      <p>Browser microphones require a trusted HTTPS connection. JARVIS can provide one locally without enabling any public tunnel.</p>
+      <div class="secure-steps">
+        <div class="secure-step"><span class="step-n">1</span><div><strong>Download the JARVIS local CA</strong><br>Install it as a CA certificate in Android security settings. This is a one-time setup for this phone.</div></div>
+        <div class="secure-step"><span class="step-n">2</span><div><strong>Return here</strong><br>Then reopen JARVIS on the same HTTPS port 8000. Chat and Voice use the same secure connection.</div></div>
+        <div class="secure-step"><span class="step-n">3</span><div><strong>Allow microphone</strong><br>Tap Voice again and choose Allow when the browser asks for microphone permission.</div></div>
+      </div>
+      <div class="secure-actions">
+        <button class="secure-secondary" onclick="downloadVoiceCA()">Download local CA certificate</button>
+        <button class="secure-primary" onclick="openSecureVoice()">Reopen secure JARVIS</button>
+      </div>
+      <div id="secure-voice-error" class="secure-error"></div>
+    </div>
+  </section>
+
+  <section id="voice-mode" aria-hidden="true">
+    <div class="voice-top">
+      <button class="voice-circle-btn icon-btn" onclick="closeVoiceMode()" aria-label="Back to dashboard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></button>
+      <div class="voice-brand">JARVIS VOICE</div>
+      <div style="width:50px"></div>
+    </div>
+    <div class="voice-stage">
+      <button id="voice-orb" onclick="voiceOrbTap()" aria-label="Start voice interaction"></button>
+      <div id="voice-state">Tap to talk</div>
+      <div id="voice-caption">Continuous voice interaction</div>
+      <div id="voice-diag">
+        <div id="diag-mic" class="voice-diag-item">Mic: waiting</div>
+        <div id="diag-server" class="voice-diag-item">Server: waiting</div>
+        <div id="diag-gemini" class="voice-diag-item">Gemini: waiting</div>
+        <div id="diag-response" class="voice-diag-item">Response: waiting</div>
+      </div>
+    </div>
+    <div class="voice-bottom">
+      <button class="voice-action" id="voice-mute" onclick="toggleVoiceMute()" aria-label="Mute microphone">⌁</button>
+      <button class="voice-action" id="voice-close" onclick="closeVoiceMode()" aria-label="End voice">×</button>
+    </div>
+  </section>
 
   <script>
     // ── Auth — bearer token ───────────────────────────────────────────────────
@@ -215,10 +450,16 @@
     ws.onerror   = () => sys('Connection error.');
     ws.onmessage = (e) => {
       const m = JSON.parse(e.data);
-      if (m.type === 'log')           append(m.speaker, m.text);
+      if (m.type === 'log') {
+        append(m.speaker, m.text);
+        _voiceTranscript(m.speaker, m.text);
+      }
       if (m.type === 'status')        setStatus(m.state);
       if (m.type === 'wake')          sys('Wake word detected — connecting…');
       if (m.type === 'sys')           sys(m.text);
+      if (m.type === 'voice_diag') {
+        // Internal transport telemetry only; intentionally hidden from Remote UI.
+      }
       if (m.type === 'file_received') _onFileReceived(m);
     };
 
@@ -406,14 +647,51 @@
     }
 
     // ── Real-time Voice — PCM16 WebSocket → Gemini Live ──────────────────────
+    const ICON_MIC = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6"/></svg>`;
+    const ICON_STOP = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>`;
     const micBtn  = document.getElementById('mic-btn');
     let _voiceWs  = null;
     let _audioCtx = null;
     let _micStm   = null;
     let _audioNd  = null;
+    let _audioSink = null;  // zero-gain sink keeps AudioWorklet graph alive
+    let _playCtx  = null;
+    let _playNode = null;
+    let _playReady = null;
+    let _playQueuedMs = 0;
+    let _voiceMuted = false;
+    let _voiceReturnTimer = null;
+
+    const voiceMode    = document.getElementById('voice-mode');
+    const voiceOrb     = document.getElementById('voice-orb');
+    const voiceState   = document.getElementById('voice-state');
+    const voiceCaption = document.getElementById('voice-caption');
+    const voiceMute    = document.getElementById('voice-mute');
+    const diagMic      = document.getElementById('diag-mic');
+    const diagServer   = document.getElementById('diag-server');
+    const diagGemini   = document.getElementById('diag-gemini');
+    const diagResponse = document.getElementById('diag-response');
+    let _localMicFrames = 0;
+
+    function _diag(el, text, ok=false, warn=false) {
+      if (!el) return;
+      el.textContent = text;
+      el.classList.toggle('ok', !!ok);
+      el.classList.toggle('warn', !!warn);
+    }
+
+    function _micLevelPct(samples) {
+      let sum = 0;
+      for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+      const rms = Math.sqrt(sum / Math.max(1, samples.length));
+      if (rms <= 1e-7) return 0;
+      const db = 20 * Math.log10(rms);
+      // Useful speech range is roughly -55 dBFS .. -8 dBFS.
+      return Math.max(0, Math.min(100, Math.round((db + 55) * (100 / 47))));
+    }
 
     function _micIdle() {
-      micBtn.innerHTML = '🎤';
+      micBtn.innerHTML = ICON_MIC;
       micBtn.title     = 'Voice — tap to speak';
       micBtn.classList.remove('recording');
     }
@@ -462,11 +740,282 @@
       });
     }
 
+    function _setVoiceState(state, caption = null) {
+      if (!voiceOrb) return;
+      voiceOrb.className = state || '';
+      if (_voiceMuted && state !== 'speaking') voiceOrb.classList.add('muted');
+      const labels = {
+        idle: 'Tap to talk',
+        connecting: 'Connecting…',
+        listening: 'Listening',
+        thinking: 'Thinking',
+        speaking: 'Speaking',
+        muted: 'Microphone muted',
+        error: 'Voice unavailable'
+      };
+      voiceState.textContent = labels[state] || labels.idle;
+      if (caption !== null) voiceCaption.textContent = caption;
+    }
+
+    function _voiceTranscript(speaker, text) {
+      if (!voiceMode?.classList.contains('open')) return;
+      if (!text) return;
+      voiceCaption.textContent = text;
+      if (speaker === 'jarvis') {
+        _setVoiceState('speaking', text);
+      } else if (_voiceWs && !_voiceMuted) {
+        _setVoiceState('thinking', text);
+      }
+    }
+
+    function showSecureVoiceSetup() {
+      const el = document.getElementById('voice-secure-setup');
+      el.classList.add('open');
+      el.setAttribute('aria-hidden','false');
+      document.getElementById('secure-voice-error').textContent = '';
+    }
+
+    function closeSecureVoiceSetup() {
+      const el = document.getElementById('voice-secure-setup');
+      el.classList.remove('open');
+      el.setAttribute('aria-hidden','true');
+    }
+
+    function downloadVoiceCA() {
+      window.location.href = '/voice-ca.crt';
+    }
+
+    async function openSecureVoice() {
+      const err = document.getElementById('secure-voice-error');
+      const btn = document.querySelector('#voice-secure-setup .secure-primary');
+      err.textContent = 'Checking secure voice…';
+      if (btn) btn.disabled = true;
+      try {
+        let last = 'Secure voice server is not ready';
+        for (let attempt = 0; attempt < 12; attempt++) {
+          const r = await _authFetch('/api/secure-link', { method:'POST' });
+          const d = await r.json().catch(() => ({}));
+          if (r.ok && d.ok && d.url) {
+            window.location.href = d.url;
+            return;
+          }
+          last = d.error || last;
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        throw new Error(last + '. Check Windows Firewall and restart JARVIS if port 8000 is blocked.');
+      } catch (e) {
+        err.textContent = e.message || 'Could not open secure voice';
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    async function openVoiceMode() {
+      // getUserMedia is deliberately unavailable on normal LAN HTTP origins.
+      // Keep the public tunnel disabled and move voice to our trusted local HTTPS origin.
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+        showSecureVoiceSetup();
+        return;
+      }
+      voiceMode.classList.add('open');
+      voiceMode.setAttribute('aria-hidden', 'false');
+      document.body.style.overflow = 'hidden';
+      voiceCaption.textContent = 'Continuous voice interaction';
+      if (_voiceWs) {
+        _setVoiceState(_voiceMuted ? 'muted' : 'listening');
+        return;
+      }
+      _setVoiceState('connecting', 'Requesting microphone…');
+      await doMic();
+      if (!_voiceWs) _setVoiceState('error', 'Microphone or voice connection unavailable');
+    }
+
+    function closeVoiceMode() {
+      _stopVoice();
+      voiceMode.classList.remove('open');
+      voiceMode.setAttribute('aria-hidden', 'true');
+      document.body.style.overflow = '';
+      _voiceMuted = false;
+      voiceMute.classList.remove('on');
+      voiceMute.innerHTML = ICON_MIC;
+      _setVoiceState('idle', 'Continuous voice interaction');
+    }
+
+    async function voiceOrbTap() {
+      if (!_voiceWs) {
+        _setVoiceState('connecting', 'Requesting microphone…');
+        await doMic();
+      } else if (_voiceMuted) {
+        toggleVoiceMute();
+      }
+    }
+
+    function toggleVoiceMute() {
+      if (!_micStm) return;
+      _voiceMuted = !_voiceMuted;
+      _micStm.getAudioTracks().forEach(t => { t.enabled = !_voiceMuted; });
+      voiceMute.classList.toggle('on', _voiceMuted);
+      voiceMute.innerHTML = ICON_MIC;
+      _setVoiceState(_voiceMuted ? 'muted' : 'listening',
+                     _voiceMuted ? 'Tap mute to continue' : 'Continuous voice interaction');
+    }
+
+    function _resetVoicePlayback() {
+      if (_playNode) {
+        try { _playNode.disconnect(); } catch (_) {}
+        _playNode = null;
+      }
+      if (_playCtx) {
+        try { _playCtx.close(); } catch (_) {}
+        _playCtx = null;
+      }
+      _playReady = null;
+      _playQueuedMs = 0;
+    }
+
+    async function _ensureVoicePlayback() {
+      if (_playNode && _playCtx) {
+        // Mobile browsers may silently close/interupt an AudioContext after
+        // inactivity, route changes, screen lock, Bluetooth changes, etc.
+        // Posting PCM to that stale worklet succeeds but produces no sound.
+        if (_playCtx.state === 'closed') {
+          _resetVoicePlayback();
+        } else {
+          if (_playCtx.state === 'suspended' || _playCtx.state === 'interrupted') {
+            try { await _playCtx.resume(); } catch (_) {}
+          }
+          if (_playCtx && _playCtx.state === 'running') return true;
+          // Context object still exists but cannot render: rebuild it.
+          _resetVoicePlayback();
+        }
+      }
+      if (_playReady) return _playReady;
+
+      _playReady = (async () => {
+        try {
+          const AC = window.AudioContext || window.webkitAudioContext;
+          try { _playCtx = new AC({ sampleRate: 24000 }); }
+          catch (_) { _playCtx = new AC(); }
+          if (_playCtx.state === 'suspended') await _playCtx.resume();
+
+          const code = `
+            class JarvisPCMPlayer extends AudioWorkletProcessor {
+              constructor(){
+                super();
+                this.q=[]; this.off=0;
+                this.port.onmessage=e=>{
+                  const a=e.data;
+                  if(a && a.length) this.q.push(a);
+                };
+              }
+              process(inputs, outputs){
+                const out=outputs[0][0];
+                let i=0;
+                while(i<out.length){
+                  if(!this.q.length){
+                    out.fill(0, i);
+                    break;
+                  }
+                  const cur=this.q[0];
+                  const n=Math.min(out.length-i, cur.length-this.off);
+                  out.set(cur.subarray(this.off, this.off+n), i);
+                  i+=n; this.off+=n;
+                  if(this.off>=cur.length){ this.q.shift(); this.off=0; }
+                }
+                return true;
+              }
+            }
+            registerProcessor('jarvis-pcm-player', JarvisPCMPlayer);
+          `;
+          const burl = URL.createObjectURL(new Blob([code], {type:'application/javascript'}));
+          await _playCtx.audioWorklet.addModule(burl);
+          URL.revokeObjectURL(burl);
+
+          _playNode = new AudioWorkletNode(_playCtx, 'jarvis-pcm-player', {
+            numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1]
+          });
+          _playNode.onprocessorerror = () => {
+            console.warn('Voice playback worklet stopped; rebuilding on next chunk.');
+            _resetVoicePlayback();
+          };
+          _playNode.connect(_playCtx.destination);
+          _playCtx.onstatechange = () => {
+            // Do not close here: suspended/interrupted contexts are first resumed
+            // by _ensureVoicePlayback. Closed contexts are rebuilt on next PCM.
+            if (_playCtx?.state === 'closed') {
+              _playNode = null;
+              _playCtx = null;
+              _playReady = null;
+            }
+          };
+          return _playCtx.state === 'running';
+        } catch (e) {
+          console.warn('Voice playback init failed:', e);
+          _playNode = null;
+          return false;
+        } finally {
+          _playReady = null;
+        }
+      })();
+      return _playReady;
+    }
+
+    function _resample24k(floatIn, dstRate) {
+      if (dstRate === 24000) return floatIn;
+      const ratio = dstRate / 24000;
+      const outLen = Math.max(1, Math.round(floatIn.length * ratio));
+      const out = new Float32Array(outLen);
+      for (let i=0; i<outLen; i++) {
+        const srcPos = i / ratio;
+        const j = Math.floor(srcPos);
+        const frac = srcPos - j;
+        const a = floatIn[Math.min(j, floatIn.length-1)];
+        const b = floatIn[Math.min(j+1, floatIn.length-1)];
+        out[i] = a + (b-a) * frac;
+      }
+      return out;
+    }
+
+    async function _playJarvisPcm(buf) {
+      if (!buf || buf.byteLength < 2) return;
+
+      // Gemini PCM16 is little-endian mono at 24 kHz. Ignore an impossible
+      // trailing odd byte rather than interpreting a malformed sample.
+      const evenBytes = buf.byteLength - (buf.byteLength % 2);
+      if (evenBytes < 2) return;
+      const pcm = new Int16Array(buf.slice(0, evenBytes));
+
+      const ok = await _ensureVoicePlayback();
+      if (!ok || !_playNode || !_playCtx) return;
+
+      const f = new Float32Array(pcm.length);
+      for (let i=0; i<pcm.length; i++) {
+        // Avoid asymmetric -32768 edge producing a one-sample spike.
+        const v = pcm[i];
+        f[i] = Math.max(-1, Math.min(1, v / (v < 0 ? 32768 : 32767)));
+      }
+
+      const out = _resample24k(f, _playCtx.sampleRate);
+      _playNode.port.postMessage(out, [out.buffer]);
+
+      if (voiceMode?.classList.contains('open')) {
+        _setVoiceState('speaking');
+        clearTimeout(_voiceReturnTimer);
+        const durMs = Math.max(30, out.length / _playCtx.sampleRate * 1000);
+        _playQueuedMs += durMs;
+        _voiceReturnTimer = setTimeout(() => {
+          _playQueuedMs = 0;
+          if (_voiceWs && !_voiceMuted)
+            _setVoiceState('listening', 'Continuous voice interaction');
+        }, Math.max(140, _playQueuedMs + 80));
+      }
+    }
+
     async function doMic() {
       if (_voiceWs) { _stopVoice(); return; }
 
-      if (!navigator.mediaDevices?.getUserMedia) {
-        _showVoiceSetup();
+      if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+        showSecureVoiceSetup();
         return;
       }
       let stream;
@@ -487,11 +1036,19 @@
       catch (_) { ctx = new AudioContext(); }
       if (ctx.state === 'suspended') await ctx.resume();
 
+      // Unlock the continuous response player during the user's tap so
+      // Android does not block later Gemini audio from the WebSocket.
+      await _ensureVoicePlayback();
+
       const wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
       const ws = new WebSocket(
         `${wsProto}://${location.host}/ws/phone-audio?token=${encodeURIComponent(_authToken)}`
       );
       ws.binaryType = 'arraybuffer';
+      ws.onmessage = e => {
+        if (e.data instanceof ArrayBuffer) _playJarvisPcm(e.data);
+        else if (e.data instanceof Blob) e.data.arrayBuffer().then(_playJarvisPcm);
+      };
 
       ws.onopen = async () => {
         const rate = ctx.sampleRate;
@@ -508,6 +1065,8 @@
           // matches PC mic chunk size, prevents queue flooding on the server.
           let _pbuf = [], _plen = 0;
           nd.port.onmessage = e => {
+            _localMicFrames++;
+
             const chunk = new Int16Array(_f32toPcm16(e.data, rate));
             _pbuf.push(chunk); _plen += chunk.length;
             if (_plen >= 1024) {
@@ -518,26 +1077,47 @@
             }
           };
           src.connect(nd);
+          // Web Audio graphs are pull-driven. A worklet that is not connected
+          // downstream can stop processing on Chrome/Android. Keep it alive
+          // through a zero-gain sink so the microphone is never echoed locally.
+          const sink = ctx.createGain();
+          sink.gain.value = 0;
+          nd.connect(sink);
+          sink.connect(ctx.destination);
+          _audioSink = sink;
           _audioNd = nd;
         } catch (_) {
           // ScriptProcessor fallback (deprecated, still works everywhere)
           const sp = ctx.createScriptProcessor(4096, 1, 1);
           sp.onaudioprocess = e => {
-            if (ws.readyState === 1) ws.send(_f32toPcm16(e.inputBuffer.getChannelData(0), rate));
+            const samples = e.inputBuffer.getChannelData(0);
+
+            if (ws.readyState === 1) ws.send(_f32toPcm16(samples, rate));
           };
           src.connect(sp); sp.connect(ctx.destination);
           _audioNd = sp;
         }
 
-        micBtn.innerHTML = '⏹';
+        micBtn.innerHTML = ICON_STOP;
         micBtn.title     = 'Tap to stop';
         micBtn.classList.add('recording');
         sys('Voice live — speak now');
-        toast('🎤 Live');
+        _diag(diagServer, 'Server: voice socket ✓', true);
+        _diag(diagGemini, 'Gemini: waiting for speech');
+        _diag(diagResponse, 'Response: waiting');
+        toast('Voice live');
+        if (voiceMode?.classList.contains('open'))
+          _setVoiceState(_voiceMuted ? 'muted' : 'listening', 'Continuous voice interaction');
       };
 
       ws.onclose = () => { _stopVoice(); };
-      ws.onerror = () => { sys('Voice connection failed.'); _stopVoice(); };
+      ws.onerror = () => {
+        sys('Voice connection failed.');
+        _diag(diagServer, 'Server: WebSocket failed ✕', false, true);
+        if (voiceMode?.classList.contains('open'))
+          _setVoiceState('error', 'Voice connection failed');
+        _stopVoice();
+      };
 
       _voiceWs  = ws;
       _audioCtx = ctx;
@@ -545,14 +1125,18 @@
     }
 
     function _stopVoice() {
-      if (_audioNd)  { try { _audioNd.disconnect(); }  catch (_) {}; _audioNd  = null; }
-      if (_audioCtx) { try { _audioCtx.close(); }      catch (_) {}; _audioCtx = null; }
+      if (_audioNd)   { try { _audioNd.disconnect(); }   catch (_) {}; _audioNd   = null; }
+      if (_audioSink) { try { _audioSink.disconnect(); } catch (_) {}; _audioSink = null; }
+      if (_audioCtx)  { try { _audioCtx.close(); }       catch (_) {}; _audioCtx  = null; }
+      _resetVoicePlayback();
       if (_micStm)   { _micStm.getTracks().forEach(t => t.stop()); _micStm = null; }
       if (_voiceWs)  {
         const w = _voiceWs; _voiceWs = null;
         if (w.readyState < 2) w.close();
       }
       _micIdle();
+      if (voiceMode?.classList.contains('open') && voiceState.textContent !== 'Voice unavailable')
+        _setVoiceState('idle', 'Tap the orb to reconnect');
     }
   </script>
 </body>

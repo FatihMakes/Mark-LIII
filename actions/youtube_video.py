@@ -62,7 +62,20 @@ def _get_api_key() -> str:
         return json.load(f)["gemini_api_key"]
 
 
-def _open_url(url: str) -> None:
+_LAST_BROWSER_URL = ""
+_LAST_BROWSER_OPEN_AT = 0.0
+
+
+def _open_url(url: str) -> bool:
+    """Open the external browser once; suppress accidental duplicate calls."""
+    global _LAST_BROWSER_URL, _LAST_BROWSER_OPEN_AT
+    now = time.monotonic()
+    if url == _LAST_BROWSER_URL and (now - _LAST_BROWSER_OPEN_AT) < 2.5:
+        print(f"[YouTube] Duplicate browser open suppressed: {url}")
+        return False
+
+    _LAST_BROWSER_URL = url
+    _LAST_BROWSER_OPEN_AT = now
     try:
         if is_mac():
             subprocess.Popen(["open", url])
@@ -70,8 +83,10 @@ def _open_url(url: str) -> None:
             subprocess.Popen(["xdg-open", url])
         else:
             subprocess.Popen(["cmd", "/c", "start", "", url], shell=False)
+        return True
     except Exception as e:
         print(f"[YouTube] ⚠️ open_url failed: {e}")
+        return False
 
 def _scrape_first_video_url(query: str) -> str | None:
 
@@ -277,6 +292,7 @@ def _scrape_trending(region: str = "TR", max_results: int = 8) -> list[dict]:
         print(f"[YouTube] ⚠️ Trending scrape failed: {e}")
         return []
 
+
 def _handle_play(parameters: dict, player) -> str:
     query = parameters.get("query", "").strip()
     if not query:
@@ -289,19 +305,43 @@ def _handle_play(parameters: dict, player) -> str:
 
     video_url = _scrape_first_video_url(query)
 
-    if video_url:
-        print(f"[YouTube] ▶️ Opening: {video_url}")
-        _open_url(video_url)
-        return f"Playing: {query}"
+    destination = str(parameters.get("destination", "gui") or "gui").strip().lower()
+    wants_browser = destination in {"browser", "external", "web"}
 
-    print(f"[YouTube] ⚠️ Scrape failed, opening filtered search page")
+    if video_url:
+        if wants_browser:
+            print(f"[YouTube] ▶️ Opening in browser: {video_url}")
+            _open_url(video_url)
+            return f"Playing in browser: {query}"
+
+        # Default: hand the normal YouTube URL to MPV embedded inside JARVIS.
+        # MPV + yt-dlp handle YouTube outside Qt WebEngine, avoiding the codec /
+        # YouTube-client restrictions that prevented QWebEngine playback.
+        if player and hasattr(player, "show_youtube"):
+            try:
+                if player.show_youtube(video_url, query, source_url=video_url):
+                    print(f"[YouTube] ▶️ MPV embedded in JARVIS GUI: {video_url}")
+                    return f"Playing in JARVIS GUI: {query}"
+            except Exception as e:
+                print(f"[YouTube] ⚠️ MPV GUI player failed: {e}")
+
+        # Only if the GUI itself is unavailable do we fall back once.
+        print(f"[YouTube] ⚠️ GUI unavailable; opening browser fallback once: {video_url}")
+        opened = _open_url(video_url)
+        if opened:
+            return f"JARVIS GUI unavailable; opened in browser once: {query}"
+        return f"Could not start the video in GUI or browser: {query}"
+
+    print(f"[YouTube] ⚠️ Search failed; opening one browser search fallback")
     fallback_url = (
         f"https://www.youtube.com/results"
         f"?search_query={quote_plus(query)}"
         f"&sp={_YT_VIDEO_FILTER}"
     )
-    _open_url(fallback_url)
-    return f"Opened YouTube search for: {query} (manual selection required)"
+    opened = _open_url(fallback_url)
+    if opened:
+        return f"Could not resolve a GUI video; opened one YouTube search page for: {query}"
+    return f"Could not resolve or open YouTube for: {query}"
 
 
 def _handle_summarize(parameters: dict, player, speak) -> str:
@@ -399,8 +439,20 @@ def _handle_trending(parameters: dict, player, speak) -> str:
 
     return result
 
+def _handle_open_browser(parameters: dict, player) -> str:
+    """Move the video currently shown in JARVIS to the system browser."""
+    if player and hasattr(player, "open_youtube_in_browser"):
+        try:
+            player.open_youtube_in_browser()
+            return "Opened the current YouTube video in the browser."
+        except Exception as e:
+            return f"Could not move the current video to the browser, sir: {e}"
+    return "There is no embedded YouTube player available, sir."
+
+
 _ACTION_MAP = {
     "play":      _handle_play,
+    "open_browser": _handle_open_browser,
     "summarize": _handle_summarize,
     "get_info":  _handle_get_info,
     "trending":  _handle_trending,
@@ -425,11 +477,11 @@ def youtube_video(
     if handler is None:
         return (
             f"Unknown YouTube action: '{action}'. "
-            "Available: play, summarize, get_info, trending."
+            "Available: play, open_browser, summarize, get_info, trending."
         )
 
     try:
-        if action == "play":
+        if action in {"play", "open_browser"}:
             return handler(params, player) or "Done."
         return handler(params, player, speak) or "Done."
     except Exception as e:
@@ -440,13 +492,20 @@ def youtube_video(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "youtube_video",
-    "description": "Controls YouTube. Use for: playing videos, summarizing a video's content, getting video info, or showing trending videos.",
+    "description": (
+        "Controls YouTube. For play, show the video inside the JARVIS GUI by default. "
+        "Only set destination='browser' when the user explicitly asks to open/play/move "
+        "the video in an external browser. Also supports summaries, video info, and trending."
+    ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "play | summarize | get_info | trending (default: play)"
+                "description": (
+                    "play | open_browser | summarize | get_info | trending. "
+                    "Use open_browser when the user asks to move/open the currently displayed video in the external browser."
+                )
             },
             "query": {
                 "type": "STRING",
@@ -459,6 +518,10 @@ TOOL = {
             "region": {
                 "type": "STRING",
                 "description": "Country code for trending e.g. TR, US"
+            },
+            "destination": {
+                "type": "STRING",
+                "description": "Playback destination: gui (default) | browser. Use browser only when explicitly requested."
             },
             "url": {
                 "type": "STRING",

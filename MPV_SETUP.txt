@@ -1,0 +1,19 @@
+JARVIS YouTube — MPV embedded player
+
+JARVIS v22 uses native MPV instead of Qt WebEngine for YouTube playback.
+
+Required:
+1. Install yt-dlp dependencies:
+   pip install -r requirements.txt
+
+2. Provide mpv.exe using ONE of these locations:
+   - Mark-LIII-main\mpv.exe
+   - Mark-LIII-main\mpv\mpv.exe
+   - Mark-LIII-main\bin\mpv.exe
+   - Mark-LIII-main\tools\mpv.exe
+   - or add MPV to Windows PATH
+
+Optional:
+Set environment variable JARVIS_MPV_PATH to the full path of mpv.exe.
+
+JARVIS does not bundle mpv.exe in this ZIP.
